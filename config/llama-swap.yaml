@@ -1,0 +1,137 @@
+# 1200 (was 600): first-time -hf downloads of ~16 GB models exceeded 10m at
+# ~14 MB/s and got killed mid-pull. Cold LOADS (once cached) are still <60s.
+healthCheckTimeout: 1200
+startPort: 10001
+logLevel: info
+
+# Lineup shape: one RESIDENT orchestrator/PA model (never unloads) + a
+# dedicated coder + a fast/light aux model, all three co-residable in the
+# 96 GiB UMA carveout with no swapping between them. A resident agent-facing
+# model needs >=64k real context to be useful for tool-calling agents, which
+# is why the biggest model (which would want the whole carveout to itself)
+# was dropped from the always-on lineup — see README for the sizing math.
+
+models:
+  "aux-fast":
+    # llama-server's own stdout/stderr is normally swallowed entirely
+    # (confirmed: never appears in `docker logs llama-swap`) — this redirects
+    # stderr to a persistent, per-model file (truncated on each start) so a
+    # silent crash has somewhere to leave a trace. `exec` (not a trailing
+    # echo) because llama-swap kills the whole process group on a detected
+    # upstream failure — a wrapper shell trying to log the exit code AFTER
+    # llama-server dies gets killed in the same sweep before it can run
+    # (verified empirically: the echo never fired in a `kill -9` test). `exec`
+    # avoids the race by not needing a post-exit code at all; anything
+    # llama-server itself prints before dying is captured as it happens.
+    # Passive diagnostics only — no verbose logging flags added, no core dumps.
+    cmd: |
+      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf ggml-org/gpt-oss-20b-GGUF --alias aux-fast --jinja -ngl 999 -c 131072 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --no-webui 2>/var/log/llama-swap/aux-fast.stderr.log'
+    # --no-mmap deliberately OMITTED here: mmap keeps weights file-backed and
+    # evictable instead of anonymous RAM. On-demand models reload repeatedly;
+    # each --no-mmap load spikes anon RAM, which is a real problem on a host
+    # where the BIOS UMA carveout has already taken most of system RAM (see
+    # README "VRAM vs GTT" section). Only the always-resident model below
+    # carries --no-mmap (it loads once at boot, so the anon-RAM spike is a
+    # one-time cost instead of a recurring one).
+    # Fast/light on-demand companion (MXFP4, ~78 t/s TG measured) for aux work
+    # (compression, titles, background classification/extraction). Co-residable
+    # with both other models (swap:false group), idle-evicted after 600s.
+    ttl: 600
+
+  "coder":
+    # See aux-fast's comment above for why `exec` + stderr redirect, not a
+    # post-exit echo.
+    # --cache-reuse 256: salvages prompt-cache chunks across context
+    # compactions / agent-session boundaries so unrelated later turns don't
+    # force a full re-prefill of the whole system prompt + tool schema.
+    cmd: |
+      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS --alias coder --jinja -ngl 999 -c 131072 -fa on --cache-type-k q4_0 --cache-type-v q4_0 --cache-reuse 256 --no-mmproj --no-webui -b 2048 -ub 2048 --spec-type draft-mtp --spec-draft-n-max 2 --reasoning-budget 8192 --reasoning-budget-message "Thinking budget exhausted. Stop reasoning and produce the final response now." 2>/var/log/llama-swap/coder.stderr.log'
+    # DEDICATED CODER: SWE-bench-V 77.2%, 14.6 GiB weights, ~25 GiB total
+    # @128k q4 KV. Measured on this box: 27.8 t/s decode, 85% MTP accept,
+    # prefill ~280 t/s at 21k depth.
+    # -b/-ub 2048: faster prefill of large diff/task prompts (coding-agent
+    # prompts often carry a full diff plus file context).
+    # --reasoning-budget 8192: coding-agent loops are mostly mechanical; a
+    # generous budget here just lets a routine lint-fix turn "think" for
+    # several minutes with no quality payoff. The orchestrator model below
+    # keeps a much bigger budget for genuine design/decomposition work.
+    # -c 131072: agentic build/integration turns (npm install, test runners,
+    # browser automation, git) can jump the context window by tens of
+    # thousands of tokens in a single tool-chaining turn — a smaller window
+    # risks a mid-turn overflow with no graceful degradation.
+    # ttl 1800 (not 0 / always-resident): long tool-execution gaps with zero
+    # LLM calls (installs, test suites, browser automation) can exceed a
+    # short idle timeout and evict the model mid-workflow; the next request
+    # then lands on a dead connection right at the eviction race, surfacing
+    # as a client-side "request timed out" with no useful server-side error.
+    # 30 minutes comfortably covers a typical build-turn gap without pinning
+    # this model alongside the resident one (a config shape that has caused a
+    # multi-hour OOM-thrash freeze on this box before — do not make more than
+    # one model resident at once without deliberately re-checking the host
+    # RAM budget).
+    ttl: 1800
+    # timeouts.connect 60 (default is 30): defense-in-depth alongside the ttl
+    # bump above — give the initial TCP dial more slack too. Cheap; the ttl
+    # bump is what actually reduces exposure to the eviction race.
+    timeouts:
+      connect: 60
+
+  "orchestrator":
+    # Role aliases: clients pin a stable role name instead of the underlying
+    # model id, so a future model swap only requires moving this block —
+    # every caller's config stays untouched. Gotcha: aliases route requests
+    # but are NOT listed in `/v1/models`.
+    aliases:
+      - "classifier"
+      - "extractor"
+    # See aux-fast's comment above for why `exec` + stderr redirect, not a
+    # post-exit echo.
+    # --cache-reuse 256: a long multi-hour agent run can spend more wall
+    # clock in prefill than generation if every context compaction destroys
+    # the single slot's prompt cache and forces a full re-prefill of the
+    # unchanged system-prompt/tools/early-history prefix. Chunked prefix
+    # reuse salvages that unchanged prefix even when the conversation middle
+    # diverges (e.g. a compaction summary). Zero memory cost.
+    # NOTE: --parallel 2 was considered (for orchestrator + child-process
+    # cache coexistence) and deliberately NOT applied — it needs a much
+    # larger context allocation (~2x KV), which is not worth the risk on a
+    # box with a documented OOM-thrash history from exactly that kind of
+    # memory pressure.
+    # --no-mmproj: several of these HF repos ship a vision mmproj that
+    # llama-server auto-loads by default even for text-only use, and
+    # multimodal loading can silently disable other features (e.g.
+    # cache_reuse) with only a log-line warning to notice by. If your
+    # downstream client declares the model text-only, the projector is dead
+    # weight — skip it explicitly rather than relying on auto-detection.
+    cmd: |
+      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf unsloth/Qwen3.6-35B-A3B-MTP-GGUF:Q8_0 --alias orchestrator --jinja -ngl 999 -c 131072 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --cache-reuse 256 --no-mmproj -b 2048 -ub 2048 --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0 --spec-type draft-mtp --spec-draft-n-max 3 --reasoning-budget 16384 --reasoning-budget-message "Thinking budget exhausted. Stop reasoning and produce the final response now." --no-mmap --no-webui 2>/var/log/llama-swap/orchestrator.stderr.log'
+    # --reasoning-budget 16384: bounds thinking-mode spirals — an unbounded
+    # budget let one real request generate ~64k tokens of pure reasoning
+    # trace (no answer) and pin the GPU for the better part of 20 minutes at
+    # full context fill. A client-side max_tokens cap is a useful backstop
+    # too, since the model can ignore the server-side budget end-marker
+    # under tight budgets.
+    # RESIDENT orchestrator/PA model. Q8_0 (~37 GiB) — near-lossless quant
+    # chosen deliberately because small-active-parameter MoE models degrade
+    # more under 4-bit quantization than dense models of similar size,
+    # particularly for tool-call fidelity. ~44 GiB live @131k q8 KV.
+    # ttl 0 = never auto-unload.
+    ttl: 0
+
+groups:
+  # No swapping anywhere — all three fit together within the carveout with
+  # headroom to spare. The orchestrator is persistent; coder and aux-fast
+  # load on demand and co-reside (swap:false), so aux calls never queue
+  # behind a long-running coding session.
+  "resident":
+    swap: false
+    exclusive: false
+    persistent: true
+    members:
+      - "orchestrator"
+  "ondemand":
+    swap: false
+    exclusive: false
+    members:
+      - "aux-fast"
+      - "coder"

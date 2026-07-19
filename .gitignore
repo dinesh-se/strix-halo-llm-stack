@@ -1,0 +1,7 @@
+models/
+hf-cache/
+hf-cache-empty.bak/
+logs/
+*.gguf
+.env
+__pycache__/

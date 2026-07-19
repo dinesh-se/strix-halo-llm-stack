@@ -33,7 +33,7 @@ Mesa version is irrelevant to inference performance.
 |---|---|---|---|---|
 | `orchestrator` | Qwen3.6-35B-A3B (MTP) | Q8_0 | always resident | ~59 t/s TG |
 | `coder` | Qwen3.6-27B (MTP) | IQ4_XS | on-demand, 30 min idle TTL | ~28 t/s TG, 85% MTP accept |
-| `aux-fast` | gpt-oss-20B | MXFP4 | on-demand, 10 min idle TTL | ~78 t/s TG |
+| `aux-fast` | Gemma 4 12B QAT (MTP) | Q4_K_XL | on-demand, 10 min idle TTL | 68.5 t/s TG (median), 60.3% MTP accept |
 
 All three fit co-resident within the 96 GiB carveout with headroom to spare.
 The orchestrator also answers to role aliases (`classifier`, `extractor`) so
@@ -76,7 +76,20 @@ suits an agentic/tool-calling workload better than a single large model does.
   projector explicitly.
 - **Speculative decoding (MTP) can be broken by KV cache quantization on some
   architectures** — worth checking upstream issues for your specific model
-  family before assuming a quantized-KV + MTP combination works cleanly.
+  family before assuming a quantized-KV + MTP combination works cleanly. (On
+  this box: an open llama.cpp issue reports ~0% draft acceptance for
+  Gemma4-family MTP with quantized KV; measured 60.3% acceptance here with
+  q8_0 KV, so it did not reproduce on this specific combo. Test, don't assume
+  either way.)
+- **A "reasoning" or "thinking" model can burn its entire token budget on the
+  reasoning trace and return empty final content**, especially at a modest
+  `max_tokens`, and some model families think by default even with no system
+  prompt or explicit trigger. If a request is coming back empty with
+  `finish_reason: length`, check for a hidden reasoning/thought channel
+  before assuming the model is broken — most OpenAI-compatible servers accept
+  a `chat_template_kwargs: {enable_thinking: false}` (or equivalent) field to
+  suppress it, and a server-side `--reasoning-budget`-style flag (where
+  available) is a good backstop for callers that forget to pass it.
 - See [`host/tuning.md`](host/tuning.md) for the VRAM-vs-GTT distinction, why
   `--no-mmap` should be used deliberately rather than everywhere, and a
   host-RAM OOM watch-item that's easy to misdiagnose as a GPU memory problem.

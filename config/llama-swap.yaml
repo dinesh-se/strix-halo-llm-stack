@@ -25,7 +25,7 @@ models:
     # llama-server itself prints before dying is captured as it happens.
     # Passive diagnostics only — no verbose logging flags added, no core dumps.
     cmd: |
-      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf ggml-org/gpt-oss-20b-GGUF --alias aux-fast --jinja -ngl 999 -c 131072 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --no-webui 2>/var/log/llama-swap/aux-fast.stderr.log'
+      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL --alias aux-fast --jinja -ngl 999 -c 131072 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --no-mmproj --no-webui --temp 1.0 --top-p 0.95 --top-k 64 --spec-type draft-mtp --spec-draft-n-max 4 --reasoning-budget 8192 --reasoning-budget-message "Thinking budget exhausted. Stop reasoning and produce the final response now." 2>/var/log/llama-swap/aux-fast.stderr.log'
     # --no-mmap deliberately OMITTED here: mmap keeps weights file-backed and
     # evictable instead of anonymous RAM. On-demand models reload repeatedly;
     # each --no-mmap load spikes anon RAM, which is a real problem on a host
@@ -33,9 +33,30 @@ models:
     # README "VRAM vs GTT" section). Only the always-resident model below
     # carries --no-mmap (it loads once at boot, so the anon-RAM spike is a
     # one-time cost instead of a recurring one).
-    # Fast/light on-demand companion (MXFP4, ~78 t/s TG measured) for aux work
-    # (compression, titles, background classification/extraction). Co-residable
-    # with both other models (swap:false group), idle-evicted after 600s.
+    # A dense model was chosen over an MoE one here deliberately: for
+    # summarization/classification-shaped aux work, a dense model's full
+    # parameter count contributes to every token, whereas an MoE model only
+    # activates a fraction of its params per token — so a 12B dense model can
+    # out-quality a similarly-sized MoE aux model. MTP drafter auto-discovered
+    # from the same HF repo's root `mtp-*.gguf` file — no `--model-draft`
+    # needed on a recent llama.cpp build. Sampling params per the model
+    # publisher's card.
+    # GOTCHA (measured on this box): this model THINKS BY DEFAULT even with
+    # no system prompt and no explicit trigger — a bare request can burn its
+    # entire token budget on a reasoning trace with empty final content
+    # (same failure shape as any reasoning model given too small a budget).
+    # Pass `chat_template_kwargs: {enable_thinking: false}` in the request
+    # body to suppress it cleanly for aux/tool-calling use where you always
+    # want a direct answer. `--reasoning-budget` here is a server-side
+    # backstop for callers that omit that kwarg.
+    # KV quant note: an open llama.cpp issue reports quantized KV cache
+    # breaking speculative-decode draft acceptance for this model family on
+    # some configs; the model publisher's own docs claim quantized KV works.
+    # Verify draft acceptance (stderr log, "draft acceptance = ...") after any
+    # upgrade — fall back to unquantized KV if acceptance craters.
+    # Fast/light on-demand companion for aux work (compression, titles,
+    # background classification/extraction). Co-residable with both other
+    # models (swap:false group), idle-evicted after 600s.
     ttl: 600
 
   "coder":

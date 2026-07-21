@@ -1,3 +1,17 @@
+# `-cram 0` on every model — read this before removing it. llama-server has a
+# HOST-RAM prompt/idle-slot cache (`-cram`/`--cache-ram`) that defaults to
+# 8192 MiB *per model* and is never capacity-enforced properly on Linux
+# because of memory overcommit (ggml-org/llama.cpp#22629). On a UMA box the
+# host-RAM partition left over after the BIOS carveout is small, so three
+# models each growing an 8 GiB host-side cache under sustained agentic load
+# will exhaust it — here it escalated from killing llama-server to the kernel
+# OOM-killing desktop apps (editor, browser) as collateral. Same failure shape
+# as ggml-org/llama.cpp#22372 on this hardware class. `-cram 0` disables that
+# cache outright. It is NOT the same mechanism as `--cache-reuse` (live KV
+# prefix reuse, on the GPU) — that one is unaffected and still worth having.
+# Confirm it took effect: startup logs print
+# "--cache-idle-slots requires --cache-ram, disabling".
+#
 # 1200 (was 600): first-time -hf downloads of ~16 GB models exceeded 10m at
 # ~14 MB/s and got killed mid-pull. Cold LOADS (once cached) are still <60s.
 healthCheckTimeout: 1200
@@ -15,8 +29,16 @@ models:
   "aux-fast":
     # llama-server's own stdout/stderr is normally swallowed entirely
     # (confirmed: never appears in `docker logs llama-swap`) — this redirects
-    # stderr to a persistent, per-model file (truncated on each start) so a
-    # silent crash has somewhere to leave a trace. `exec` (not a trailing
+    # stderr to a persistent, per-model file so a silent crash has somewhere
+    # to leave a trace.
+    # Use `2>>` (APPEND), not `2>`. This started as `2>` and that quietly
+    # defeated the entire point: llama-swap restarts a crashed model within
+    # seconds, and the replacement process truncated the log on startup,
+    # erasing the crash that was supposed to be captured. The bug is invisible
+    # until the first time you actually need the log — every file looked
+    # healthy, just with only post-restart content in it. Appending grows
+    # unbounded, so pair it with logrotate (see host/tuning.md).
+    # `exec` (not a trailing
     # echo) because llama-swap kills the whole process group on a detected
     # upstream failure — a wrapper shell trying to log the exit code AFTER
     # llama-server dies gets killed in the same sweep before it can run
@@ -25,7 +47,7 @@ models:
     # llama-server itself prints before dying is captured as it happens.
     # Passive diagnostics only — no verbose logging flags added, no core dumps.
     cmd: |
-      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL --alias aux-fast --jinja -ngl 999 -c 131072 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --no-mmproj --no-webui --temp 1.0 --top-p 0.95 --top-k 64 --spec-type draft-mtp --spec-draft-n-max 4 --reasoning-budget 8192 --reasoning-budget-message "Thinking budget exhausted. Stop reasoning and produce the final response now." 2>/var/log/llama-swap/aux-fast.stderr.log'
+      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL --alias aux-fast --jinja -ngl 999 -c 131072 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --no-mmproj --no-webui --temp 1.0 --top-p 0.95 --top-k 64 --spec-type draft-mtp --spec-draft-n-max 4 --reasoning-budget 8192 --reasoning-budget-message "Thinking budget exhausted. Stop reasoning and produce the final response now." -cram 0 2>>/var/log/llama-swap/aux-fast.stderr.log'
     # --no-mmap deliberately OMITTED here: mmap keeps weights file-backed and
     # evictable instead of anonymous RAM. On-demand models reload repeatedly;
     # each --no-mmap load spikes anon RAM, which is a real problem on a host
@@ -66,12 +88,27 @@ models:
     # compactions / agent-session boundaries so unrelated later turns don't
     # force a full re-prefill of the whole system prompt + tool schema.
     cmd: |
-      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS --alias coder --jinja -ngl 999 -c 131072 -fa on --cache-type-k q4_0 --cache-type-v q4_0 --cache-reuse 256 --no-mmproj --no-webui -b 2048 -ub 2048 --spec-type draft-mtp --spec-draft-n-max 2 --reasoning-budget 8192 --reasoning-budget-message "Thinking budget exhausted. Stop reasoning and produce the final response now." 2>/var/log/llama-swap/coder.stderr.log'
+      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS --alias coder --jinja -ngl 999 -c 131072 -fa on --cache-type-k q4_0 --cache-type-v q4_0 --cache-reuse 256 --no-mmproj --no-webui -b 2048 -ub 1024 --spec-type draft-mtp --spec-draft-n-max 2 --reasoning-budget 8192 --reasoning-budget-message "Thinking budget exhausted. Stop reasoning and produce the final response now." -cram 0 2>>/var/log/llama-swap/coder.stderr.log'
     # DEDICATED CODER: SWE-bench-V 77.2%, 14.6 GiB weights, ~25 GiB total
     # @128k q4 KV. Measured on this box: 27.8 t/s decode, 85% MTP accept,
     # prefill ~280 t/s at 21k depth.
-    # -b/-ub 2048: faster prefill of large diff/task prompts (coding-agent
-    # prompts often carry a full diff plus file context).
+    # -b 2048 / -ub 1024: a large logical batch (-b) still gives fast prefill
+    # of big diff/task prompts (coding-agent prompts often carry a full diff
+    # plus file context), but the PHYSICAL batch (-ub) is deliberately kept
+    # lower here. Why: `-ub` governs how much work a single GPU dispatch does,
+    # and amdgpu's compute-ring timeout is per-dispatch (10s by default). At
+    # -ub 2048 this model produced kernel `ring comp_1.x.x timeout ... Process
+    # llama-server` events under heavy prefill. The ring reset itself
+    # "succeeds" ("device wedged, but recovered through reset"), but the
+    # process's Vulkan context does not always survive it — llama.cpp then
+    # dies of SIGABRT with a lost-device error, mid-stream, and the client
+    # sees a request that hangs for minutes and returns an empty body.
+    # Halving -ub shortens the longest dispatch. Not a kernel regression: the
+    # same timeouts occurred across two different kernel releases here.
+    # If you hit unexplained mid-stream deaths on Vulkan, check
+    # `journalctl -k | grep "ring .* timeout"` BEFORE suspecting your config —
+    # llama-swap reports it only as "upstream exited unexpectedly", which
+    # looks identical to an OOM kill but is a completely different failure.
     # --reasoning-budget 8192: coding-agent loops are mostly mechanical; a
     # generous budget here just lets a routine lint-fix turn "think" for
     # several minutes with no quality payoff. The orchestrator model below
@@ -125,7 +162,7 @@ models:
     # downstream client declares the model text-only, the projector is dead
     # weight — skip it explicitly rather than relying on auto-detection.
     cmd: |
-      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf unsloth/Qwen3.6-35B-A3B-MTP-GGUF:Q8_0 --alias orchestrator --jinja -ngl 999 -c 131072 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --cache-reuse 256 --no-mmproj -b 2048 -ub 2048 --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0 --spec-type draft-mtp --spec-draft-n-max 3 --reasoning-budget 16384 --reasoning-budget-message "Thinking budget exhausted. Stop reasoning and produce the final response now." --no-mmap --no-webui 2>/var/log/llama-swap/orchestrator.stderr.log'
+      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf unsloth/Qwen3.6-35B-A3B-MTP-GGUF:Q8_0 --alias orchestrator --jinja -ngl 999 -c 131072 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --cache-reuse 256 --no-mmproj -b 2048 -ub 2048 --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0 --spec-type draft-mtp --spec-draft-n-max 3 --reasoning-budget 16384 --reasoning-budget-message "Thinking budget exhausted. Stop reasoning and produce the final response now." --no-mmap --no-webui -cram 0 2>>/var/log/llama-swap/orchestrator.stderr.log'
     # --reasoning-budget 16384: bounds thinking-mode spirals — an unbounded
     # budget let one real request generate ~64k tokens of pure reasoning
     # trace (no answer) and pin the GPU for the better part of 20 minutes at

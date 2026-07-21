@@ -63,10 +63,24 @@ ps -eo pid,rss,args | grep llama-server | grep -v grep
 ```
 
 A kernel-level OOM kill of `llama-server` shows up in `journalctl -k` as
-`Out of memory: Killed process ... (llama-server)` — if you see this, check
-what else was competing for host RAM in that window before assuming it's a
-model-config problem; on this box it turned out to be an unrelated background
-workload retry-looping against the model, not the model itself.
+`Out of memory: Killed process ... (llama-server)`.
+
+**Root cause, once it was finally isolated: `--cache-ram`.** llama-server keeps
+a host-RAM prompt/idle-slot cache that defaults to **8192 MiB per model** and
+is not reliably capacity-enforced on Linux (memory overcommit —
+ggml-org/llama.cpp#22629). Three co-resident models each growing toward that
+ceiling will exhaust a ~30 GiB OS partition; once swap goes too, the OOM
+killer starts taking desktop applications (editor, browser) as collateral,
+which makes it look like a desktop problem rather than an inference one. Set
+`-cram 0` on every model (see `config/llama-swap.yaml`). Verify it applied —
+startup logs print `--cache-idle-slots requires --cache-ram, disabling`.
+
+Two earlier theories that looked convincing and were both wrong, recorded so
+you don't spend time on them: (1) a background workload retry-looping against
+the model — real, and worth fixing, but not what exhausted RAM; (2) `--no-mmap`
+on reloading on-demand models — a genuine contributor, but the kills continued
+after removing it. The tell for the real cause is that anon-RSS climbs
+monotonically *during* steady streaming rather than spiking at load time.
 
 ## `--no-mmap` — use deliberately, not by default
 
@@ -79,6 +93,75 @@ Recommended: only set `--no-mmap` on a model you intend to keep **always
 resident** (so the anon-RAM cost is a one-time load-time event, not a
 recurring one on every on-demand reload). Leave it off for on-demand models
 that load and unload repeatedly.
+
+## GPU compute-ring timeouts (mid-stream death that looks like an OOM)
+
+Under heavy prefill on Vulkan, the kernel can time out a compute ring:
+
+```
+amdgpu 0000:c6:00.0: ring comp_1.3.0 timeout, signaled seq=..., emitted seq=...
+amdgpu 0000:c6:00.0:  Process llama-server pid ...
+amdgpu 0000:c6:00.0: Ring comp_1.3.0 reset succeeded
+amdgpu 0000:c6:00.0: [drm] device wedged, but recovered through reset
+```
+
+The reset "succeeds" at the kernel level, but the process's Vulkan context
+does not always survive it. When it doesn't, llama.cpp dies of **SIGABRT**
+(a lost-device error, not a segfault and not an OOM kill). What the client
+sees is a request that hangs for minutes and then returns an empty or
+truncated body; what llama-swap logs is only:
+
+```
+httputil: ReverseProxy read error during body copy: unexpected EOF
+[WARN] group: running <model> exited: [<model>] upstream exited unexpectedly
+```
+
+That message is identical to what an OOM kill produces, which is exactly why
+this is easy to misdiagnose. Distinguish them:
+
+```sh
+journalctl -k | grep -E "ring .* timeout|Out of memory: Killed"
+```
+
+A ring timeout with no OOM line means the GPU hung, not that you ran out of
+RAM — do not go re-tune your memory budget. To confirm the abort signal, the
+core dump's ELF notes carry it (`NT_PRSTATUS` → `signal=6` is SIGABRT;
+an OOM kill leaves no core at all, since SIGKILL doesn't dump).
+
+Mitigation: lower `-ub` (physical batch). `-ub` sets how much work one GPU
+dispatch does, and the amdgpu compute-ring timeout is per-dispatch (10s by
+default), so halving `-ub` shortens the longest dispatch. Keep `-b` (logical
+batch) large so prefill batching upstream of the GPU is unaffected. If
+timeouts persist at a smaller `-ub`, the long dispatch is coming from
+somewhere else (speculative-decode graphs are a candidate) and raising
+`amdgpu.lockup_timeout` is the blunter alternative.
+
+Note this is **not** necessarily a kernel regression — verify before blaming a
+recent upgrade. Here the same timeouts appeared across two different kernel
+releases, and were mistakenly pinned on the newer one until per-boot counts
+were actually compared.
+
+## Rotate the per-model stderr logs
+
+The stderr redirects in `config/llama-swap.yaml` use `2>>` (append), so they
+grow without bound. Rotate them (needs root):
+
+```sh
+sudo tee /etc/logrotate.d/llama-swap >/dev/null <<'EOF'
+/home/YOU/llama-stack/logs/*.stderr.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+```
+
+`copytruncate` matters: the logs are held open by long-lived `llama-server`
+processes that will not reopen a rotated-away file descriptor, so a plain
+`create` rotation would silently send subsequent output nowhere.
 
 ## Verify the GPU is actually being used
 

@@ -21,11 +21,14 @@ services:
       - ./models:/models:rw
       - ./hf-cache:/root/.cache/huggingface:rw
       - ./config/llama-swap.yaml:/app/config.yaml:ro
-      # Passive crash diagnostics: each model's cmd redirects llama-server's
-      # stderr here (truncated per start). See llama-swap.yaml comments for
-      # why (llama-swap kills the whole process group on a detected upstream
-      # failure, racing out any post-exit shell hook, so exit-code echoing
-      # doesn't work reliably — use `exec` + a stderr redirect instead).
+      # Passive crash diagnostics: each model's cmd APPENDS llama-server's
+      # stderr here (`2>>`, not `2>` — a truncating redirect erases the crash
+      # when llama-swap restarts the model seconds later). See llama-swap.yaml
+      # comments for why (llama-swap kills the whole process group on a
+      # detected upstream failure, racing out any post-exit shell hook, so
+      # exit-code echoing doesn't work reliably — use `exec` + a stderr
+      # redirect instead). These files grow unbounded; see host/tuning.md for
+      # the logrotate rule.
       - ./logs:/var/log/llama-swap:rw
     extra_hosts:
       - "host.docker.internal:host-gateway"

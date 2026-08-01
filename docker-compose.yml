@@ -1,11 +1,21 @@
+# ⚠️ If you are the author reading this on the machine this was extracted from:
+# do NOT `docker compose up` here. This file declares `container_name:
+# llama-swap` and publishes host port 9292 — both identical to the live stack
+# at ~/llama-stack. Bringing this up collides with production. This copy is the
+# publishable reference; edit here, run there.
 services:
   llama-swap:
-    # Pinned to b9853 (v234-vulkan-b9853), probed OK 2026-07-02. Upstream GPU
+    # Pinned to b10200 (v245-vulkan-b10200), probed OK 2026-08-01. Upstream GPU
     # detection is NON-MONOTONIC: b9438, b9592, b9603, b9628 fail (`--list-devices`
-    # empty -> silent CPU fallback ~18 t/s); b9519, b9538, b9544, b9570, b9853 work.
+    # empty -> silent CPU fallback ~18 t/s); b9519, b9538, b9544, b9570, b9853, b10200 work.
     # Always probe `--list-devices` for the RADV device before bumping.
     # Prev known-good: b9570 sha256:d176340e... / b9209 sha256:2c355fd9...
-    image: ghcr.io/mostlygeek/llama-swap@sha256:f00c5636b2bd4aefddb8a0fcfe01918440322596d60ec2b33cd1d46bfebc7216
+    # Resolve the digest by PULLING the tag and reading RepoDigests — not by
+    # querying the registry API. Observed 2026-08-01: this exact tag was
+    # rebuilt mid-session and a registry HEAD taken 30 minutes before the pull
+    # returned a digest that then failed with "manifest unknown". A
+    # version-pinned tag is not guaranteed immutable.
+    image: ghcr.io/mostlygeek/llama-swap@sha256:49546f75ddf24fcadfbbd12dab1985fadaddaf1abcae63fd68be369dc0e419fc
     container_name: llama-swap
     restart: unless-stopped
     ports:

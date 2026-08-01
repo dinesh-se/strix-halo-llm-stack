@@ -5,3 +5,4 @@ logs/
 *.gguf
 .env
 __pycache__/
+observability/llama-watchdog/watchdog.env

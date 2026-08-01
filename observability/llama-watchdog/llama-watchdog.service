@@ -1,0 +1,13 @@
+[Unit]
+Description=llama-swap GPU device-lost watchdog + per-model metrics relay (:9611)
+After=network.target docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=/home/YOU/strix-halo-llm-stack/observability/llama-watchdog/watchdog.env
+ExecStart=/usr/bin/python3 /home/YOU/strix-halo-llm-stack/observability/llama-watchdog/watchdog.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

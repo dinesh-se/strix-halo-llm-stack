@@ -81,7 +81,16 @@ suits an agentic/tool-calling workload better than a single large model does.
   resets llama-swap's idle-eviction counter on every scrape**, making a `ttl`
   setting functionally inert. If you wire up Prometheus/VictoriaMetrics
   scraping, don't point it at the per-model upstream endpoints for a model
-  you expect to idle-evict.
+  you expect to idle-evict. See [`observability/llama-watchdog`](observability/llama-watchdog)
+  for a scraper that avoids this by going direct to the upstream llama-server
+  process instead of through llama-swap's proxy.
+- **A wedged GPU can pass every liveness check.** `VK_ERROR_DEVICE_LOST` on
+  this hardware class (see `host/tuning.md`) leaves llama-server alive,
+  answering `/health` and `/v1/models` with 200, while every real completion
+  500s — and the process never exits, so nothing restarts it. Only a request
+  that actually decodes a token can tell live from wedged. See
+  [`observability/llama-watchdog`](observability/llama-watchdog) for the
+  probe-and-recover script this repo uses.
 - **`--no-mmproj` matters even for text-only use.** Several community GGUF
   repos bundle a vision projector that llama-server auto-loads by default;
   loading it can silently disable other features (like `--cache-reuse`) with
@@ -121,6 +130,46 @@ suits an agentic/tool-calling workload better than a single large model does.
 - See [`host/tuning.md`](host/tuning.md) for the VRAM-vs-GTT distinction, why
   `--no-mmap` should be used deliberately rather than everywhere, and a
   host-RAM OOM watch-item that's easy to misdiagnose as a GPU memory problem.
+
+## GPU watchdog + metrics relay
+
+[`observability/llama-watchdog`](observability/llama-watchdog) is a small
+(~600-line, stdlib-only) Python service that runs alongside llama-swap and
+does three things in one loop:
+
+1. **Probes every loaded model with a real one-token completion**, not a
+   liveness endpoint. A wedged `VK_ERROR_DEVICE_LOST` server still answers
+   `/health` and `/v1/models` — only an actual decode distinguishes it from a
+   healthy one. On this box it went unnoticed for ~20 minutes the first time,
+   silently 500ing every real request.
+2. **Recovers automatically**: unload + re-warm on a confirmed device-lost,
+   Telegram alert either way. A slot-aware check distinguishes "busy behind a
+   long prefill" from "actually wedged" (both show `is_processing: true` —
+   only progressing token counters tell them apart), so it won't kill a model
+   that's just doing real work under `--parallel 1`.
+3. **Relays each model's `llamacpp:*` metrics** to whatever's scraping
+   `:9611`, going **direct to the upstream llama-server** rather than through
+   llama-swap's proxy — scraping through the proxy resets the idle-eviction
+   timer on every poll and makes `ttl` inert (see Known gotchas above).
+
+Optionally probes a companion service's `/health` too (disabled by default —
+see `HINDSIGHT_URL` in `watchdog.env.example`), for anything else you run
+alongside this stack that you'd also want paged on.
+
+```sh
+cp observability/llama-watchdog/watchdog.env.example observability/llama-watchdog/watchdog.env
+# fill in TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (both optional)
+mkdir -p ~/.config/systemd/user
+cp observability/llama-watchdog/llama-watchdog.service ~/.config/systemd/user/
+# edit the two /home/YOU/ paths in that file to match your checkout location
+systemctl --user daemon-reload
+systemctl --user enable --now llama-watchdog
+curl localhost:9611/metrics
+```
+
+Prometheus/VictoriaMetrics-format on `:9611`. Point your scrape config at
+this port, not at the llama-server upstreams directly, for exactly the
+idle-timer reason above.
 
 ## Benchmarking
 

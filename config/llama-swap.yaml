@@ -88,6 +88,23 @@ models:
     # some configs; the model publisher's own docs claim quantized KV works.
     # Verify draft acceptance (stderr log, "draft acceptance = ...") after any
     # upgrade — fall back to unquantized KV if acceptance craters.
+    #
+    # MEASURED 2026-08-01, llama.cpp b10200, q8_0 KV, 12 runs of randomized
+    # prose (NOT a repeated-sentence prompt — that returns 1.000 on every MTP
+    # model here and tells you nothing):
+    #   draft acceptance : median 0.854  mean 0.777  p10 0.323  p90 0.981
+    #   decode           : median 87.3 t/s, range 43.8-96.9
+    #   17% of runs fell below the 0.70 "investigate" floor
+    # So the quantized-KV bug does NOT reproduce on this combination. Note the
+    # spread, though: a single sample is not a measurement here.
+    #
+    # THE DECODE SWING IS THE DRAFTER, NOT THERMALS. Run-to-run decode looks
+    # like throttling or GPU contention; across those 12 runs the correlation
+    # between acceptance and decode rate was +0.99. When speculation lands you
+    # get several tokens per verification step; when it misses you pay full
+    # sequential decode. Check acceptance before touching clocks or batch size.
+    # --spec-draft-n-max 4 (vs 2 on the coder) plausibly widens the spread,
+    # since a longer speculative run is more all-or-nothing — untested here.
     # Fast/light on-demand companion for aux work (compression, titles,
     # background classification/extraction). Co-residable with both other
     # models (swap:false group), idle-evicted after 600s.

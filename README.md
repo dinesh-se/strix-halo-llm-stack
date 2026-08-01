@@ -33,7 +33,7 @@ Mesa version is irrelevant to inference performance.
 |---|---|---|---|---|---|
 | `orchestrator` | Qwen3.6-35B-A3B (MTP) | Q8_0 | q8_0 | always resident | 92.6 t/s TG, 831 t/s PP |
 | `coder` | Qwen3.6-27B (MTP) | Q6_K | bf16 | on-demand, 30 min idle TTL | 21.2 t/s TG, 218 t/s PP @16.7k, 0.84 MTP accept |
-| `aux-fast` | Gemma 4 12B QAT (MTP) | Q4_K_XL | q8_0 | on-demand, 10 min idle TTL | 90.7 t/s TG, 456 t/s PP |
+| `aux-fast` | Gemma 4 12B QAT (MTP) | Q4_K_XL | q8_0 | on-demand, 10 min idle TTL | 87.3 t/s TG (median, high variance), 456 t/s PP, 0.85 MTP accept |
 
 All three fit co-resident within the 96 GiB carveout with headroom to spare
 (measured: 84.9 GiB with all three loaded; the coder alone is 28.3 GiB at
@@ -91,9 +91,24 @@ suits an agentic/tool-calling workload better than a single large model does.
   architectures** — worth checking upstream issues for your specific model
   family before assuming a quantized-KV + MTP combination works cleanly. (On
   this box: an open llama.cpp issue reports ~0% draft acceptance for
-  Gemma4-family MTP with quantized KV; measured 60.3% acceptance here with
-  q8_0 KV, so it did not reproduce on this specific combo. Test, don't assume
-  either way.)
+  Gemma4-family MTP with quantized KV. Re-measured 2026-08-01 on b10200 with
+  q8_0 KV, 12 runs of randomized prose: **median 0.854, mean 0.777**. It does
+  not reproduce here. Test, don't assume either way.)
+- **Measure draft acceptance on VARIED text, and report a distribution, not a
+  single number.** A repeated-sentence benchmark prompt drives acceptance to
+  1.000 on every MTP model in this lineup — the drafter is just predicting the
+  repetition, so the figure is meaningless. Worse, a single sample hides the
+  shape: `aux-fast` measured over 12 runs spans **0.288 to 0.981**, with 17% of
+  runs below the 0.70 "investigate" floor even though the median is 0.854.
+- **If decode throughput is bimodal, suspect the drafter before thermals or
+  contention.** `aux-fast` decode swings between ~45 and ~95 t/s run to run,
+  which looks like throttling or GPU contention. It is neither: across 12 runs
+  the correlation between draft acceptance and decode rate was **+0.99**. When
+  speculation lands you get several tokens per verification step; when it
+  misses you pay full sequential decode. Plot acceptance against throughput
+  before touching clocks, fan curves, or batch sizes. A longer draft
+  (`--spec-draft-n-max 4` here vs 2 on the coder) plausibly widens this spread,
+  since a longer speculative run is more all-or-nothing — untested.
 - **A "reasoning" or "thinking" model can burn its entire token budget on the
   reasoning trace and return empty final content**, especially at a modest
   `max_tokens`, and some model families think by default even with no system

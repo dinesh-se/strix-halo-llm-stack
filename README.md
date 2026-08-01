@@ -29,13 +29,26 @@ Mesa version is irrelevant to inference performance.
 
 ## Model lineup
 
-| Role | Model | Quant | Residency | Measured |
-|---|---|---|---|---|
-| `orchestrator` | Qwen3.6-35B-A3B (MTP) | Q8_0 | always resident | ~59 t/s TG |
-| `coder` | Qwen3.6-27B (MTP) | IQ4_XS | on-demand, 30 min idle TTL | ~28 t/s TG, 85% MTP accept |
-| `aux-fast` | Gemma 4 12B QAT (MTP) | Q4_K_XL | on-demand, 10 min idle TTL | 68.5 t/s TG (median), 60.3% MTP accept |
+| Role | Model | Quant | KV | Residency | Measured (llama.cpp b10200) |
+|---|---|---|---|---|---|
+| `orchestrator` | Qwen3.6-35B-A3B (MTP) | Q8_0 | q8_0 | always resident | 92.6 t/s TG, 831 t/s PP |
+| `coder` | Qwen3.6-27B (MTP) | Q6_K | bf16 | on-demand, 30 min idle TTL | 21.2 t/s TG, 218 t/s PP @16.7k, 0.84 MTP accept |
+| `aux-fast` | Gemma 4 12B QAT (MTP) | Q4_K_XL | q8_0 | on-demand, 10 min idle TTL | 90.7 t/s TG, 456 t/s PP |
 
-All three fit co-resident within the 96 GiB carveout with headroom to spare.
+All three fit co-resident within the 96 GiB carveout with headroom to spare
+(measured: 84.9 GiB with all three loaded; the coder alone is 28.3 GiB at
+131k context).
+
+Two notes on reading that table honestly:
+
+- **The coder is the slow one on purpose.** Q6_K + bf16 KV was chosen for
+  output quality; it decodes roughly 25% slower than the IQ4_XS + q4_0 config
+  this repo shipped earlier. If VRAM or latency matters more to you than
+  coding accuracy, that older combination is a reasonable trade.
+- **Measure MTP acceptance on varied text.** A repeated-sentence benchmark
+  prompt pushes acceptance to 1.000 on these models — the drafter is just
+  predicting the repetition. Every acceptance figure above comes from
+  randomized prose.
 The orchestrator also answers to role aliases (`classifier`, `extractor`) so
 downstream consumers can pin a stable name across future model swaps.
 

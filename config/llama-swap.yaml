@@ -100,10 +100,31 @@ models:
     # compactions / agent-session boundaries so unrelated later turns don't
     # force a full re-prefill of the whole system prompt + tool schema.
     cmd: |
-      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS --alias coder --jinja -ngl 999 -c 131072 -fa on --cache-type-k q4_0 --cache-type-v q4_0 --cache-reuse 256 --no-mmproj --no-webui -b 2048 -ub 1024 --parallel 2 --kv-unified --spec-type draft-mtp --spec-draft-n-max 2 --reasoning-budget 8192 --reasoning-budget-message "Thinking budget exhausted. Stop reasoning and produce the final response now." -cram 0 2>>/var/log/llama-swap/coder.stderr.log'
-    # DEDICATED CODER: SWE-bench-V 77.2%, 14.6 GiB weights, ~25 GiB total
-    # @128k q4 KV. Measured on this box: 27.8 t/s decode, 85% MTP accept,
-    # prefill ~280 t/s at 21k depth.
+      /bin/sh -c 'exec /app/llama-server --port ${PORT} --metrics -hf unsloth/Qwen3.6-27B-MTP-GGUF:Q6_K --alias coder --jinja -ngl 999 -c 131072 -fa on --cache-type-k bf16 --cache-type-v bf16 --cache-reuse 256 --no-mmproj --no-webui -b 2048 -ub 1024 --parallel 2 --kv-unified --spec-type draft-mtp --spec-draft-n-max 2 --reasoning-budget 8192 --reasoning-budget-message "Thinking budget exhausted. Stop reasoning and produce the final response now." -cram 0 2>>/var/log/llama-swap/coder.stderr.log'
+    # DEDICATED CODER: Qwen3.6-27B, SWE-bench-V 77.2% (model-level score, not
+    # quant-specific — expect real quality to track the quant you pick).
+    #
+    # QUANT: Q6_K weights + bf16 KV. This is a deliberate QUALITY-over-speed
+    # choice and it is measurably slower than the IQ4_XS + q4_0/q4_0 config
+    # this file used to ship. Both of those were leftovers from an earlier
+    # round of memory trimming on a 96 GiB box — neither was ever chosen FOR
+    # this model. If you are tight on VRAM, IQ4_XS + q4_0 is a legitimate
+    # trade and roughly 25% faster to decode; just make it knowingly.
+    #
+    # Measured on this box (llama.cpp b10200, --parallel 2 --kv-unified,
+    # idle GPU, 3 runs each, fresh prefill):
+    #   footprint @131k ctx : 28.3 GiB total (VRAM delta, weights + bf16 KV)
+    #   prefill @~0.9k depth: 213 t/s
+    #   prefill @~16.7k depth: 218 t/s
+    #   decode              : 21.2 t/s
+    #   MTP draft acceptance: 0.837 median
+    #
+    # ⚠️ Measure MTP acceptance on VARIED text. A repeated-sentence benchmark
+    # prompt drives acceptance to 1.000 on this model and is worthless as a
+    # published number — the drafter simply predicts the repetition. The 0.837
+    # above is from randomized prose; a synthetic loop gave 1.000 the same day.
+    # Standing rule here: below ~0.70 median on a real workload is worth
+    # investigating, above it MTP is earning its keep.
     # -b 2048 / -ub 1024: a large logical batch (-b) still gives fast prefill
     # of big diff/task prompts (coding-agent prompts often carry a full diff
     # plus file context), but the PHYSICAL batch (-ub) is deliberately kept

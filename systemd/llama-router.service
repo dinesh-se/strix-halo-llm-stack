@@ -1,0 +1,100 @@
+[Unit]
+# llama.cpp ROUTER SERVER — replaces both llama-swap and ds4-server.service.
+# Deployed 2026-08-06. Plan: ~/.claude/plans/turning-to-plan-mode-temporal-acorn.md
+#
+# WHY THIS EXISTS. Two orchestrators used to run side by side: llama-swap on
+# :9292 (three Qwens) and DS4 standalone on :10097, because mainline llama.cpp
+# lacks the DeepSeek-V4 Vulkan kernels entirely — measured 2026-08-06, DS4 on
+# mainline b10290 ran 10.2 t/s vs 18.8 on kyuz0's fork. Neither orchestrator
+# knew about the other, so DS4 was started by hand and was always found dead in
+# a later session. llama-server's own router mode hosts both models from the
+# fork build, which is the only arrangement that gets DS4 at full speed AND
+# lifecycle management.
+#
+# NOTE: no After=/Requires=docker.service. This is a USER unit and cannot
+# reference system units — systemd fails the start with "Unit docker.service
+# not found". The docker CLI simply fails and Restart=on-failure retries.
+Description=llama.cpp router server (deepseek-v4-flash + gemma4-e4b)
+
+# A crash loop is expensive here in a way it never was for llama-swap: DS4's
+# load-on-startup costs 3–11 minutes per iteration. Let it give up rather than
+# grind the disk all night.
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f llama-router
+
+# --network host is MANDATORY, not a preference.
+# Router children get EPHEMERAL ports inside the container's network namespace
+# (44449 observed, NOT llama-swap's startPort+N). Under bridge networking those
+# ports are unpublished, so llama-watchdog cannot reach a child's /slots — and
+# /slots is the only thing that distinguishes "wedged" from "mid-prefill".
+# DS4's 100,489-token prefill took 751 s to first token; at PROBE_TIMEOUT=90 /
+# FAIL_THRESHOLD=3 the watchdog would declare it wedged after ~4.5 min and
+# unload it mid-request, then pay 3–11 min to reload. Repeatedly.
+# Consequence accepted: child ports are LAN-reachable. Add a ufw rule if that
+# ever matters; it is deliberate, not an oversight.
+#
+# --oom-score-adj=1000 CARRIED OVER from ds4-server.service. DS4's ~98 GiB lives
+# in amdgpu GTT and is INVISIBLE to the kernel OOM killer — during the
+# 2026-08-06 09:52 incident a real task dump totalled 1.58 GiB RSS across 198
+# processes, so the killer found nothing big and destroyed the entire GNOME
+# session instead (pipewire, xdg portals, ssh-agent, wezterm, and the user
+# systemd manager itself). That is why it presented as "I got logged off".
+# ⚠️ BLAST RADIUS IS WIDER HERE than it was standalone: this container is PID 1
+# for BOTH models, so if the kernel picks the router itself, --rm fires and
+# every child dies, costing a full DS4 reload. Accepted — a recoverable unit
+# kill beats a dead desktop — and StartLimitBurst above stops it looping.
+#
+# ⚠️ SCOPED MOUNTS ARE A SAFETY CONTROL, NOT TIDINESS. There is NO discovery
+# disable/allowlist flag (checked: only --models-dir/--models-preset/
+# --models-max/--models-autoload exist), and --models-max caps model COUNT not
+# SIZE. With the whole hf-cache mounted the router enumerates every GGUF —
+# gpt-oss-120b, Qwen3.5-122B (73 GiB), stale 27b/35b quants — and one stray
+# model id would load 73 GiB on top of DS4. Only the two needed repos are
+# mounted, and LLAMA_CACHE points at an empty dir so discovery finds nothing.
+# Mount the REPO root, not the snapshot dir: the .gguf files are symlinks into
+# ../../blobs/ (aux) and ../../../blobs/ (ds4), which only resolve if blobs/ is
+# inside the same mount.
+ExecStart=/usr/bin/docker run --rm --name llama-router \
+  --oom-score-adj=1000 \
+  --network host \
+  --device /dev/dri:/dev/dri \
+  --group-add video --group-add 992 \
+  --security-opt seccomp=unconfined \
+  -e LLAMA_CACHE=/models/empty \
+  -v /home/YOUR_USER/llama-stack/hf-cache/models--unsloth--DeepSeek-V4-Flash-0731-GGUF:/models/ds4:ro \
+  -v /home/YOUR_USER/llama-stack/hf-cache/hub/models--unsloth--gemma-4-E4B-it-qat-GGUF:/models/aux:ro \
+  -v /home/YOUR_USER/llama-stack/empty-cache:/models/empty:rw \
+  -v /home/YOUR_USER/llama-stack/config/models.ini:/models.ini:ro \
+  --entrypoint /usr/bin/llama-server \
+  kyuz0/amd-strix-halo-toolboxes@sha256:PIN_YOUR_OWN_DIGEST \
+  --host 0.0.0.0 --port 9292 \
+  --models-preset /models.ini \
+  --models-max 2
+
+# -t 60, not 30: a child caught mid-load needs longer than llama-swap's models
+# ever did.
+ExecStop=/usr/bin/docker stop -t 60 llama-router
+
+# 🔴 IMAGE PINNED BY DIGEST. Do not revert to :vulkan-radv-performance.
+# That tag is mutable, rebuilt frequently, and tracks an unmerged third-party
+# fork (Nathanw1014/llama.cpp:strix-halo-vulkan), so it can swap the
+# DeepSeek-V4 kernels and the GGML_VK_MMID_F16B MoE path out from under us with
+# no signal. Not hypothetical: on 2026-08-01 a *version*-pinned llama-swap tag
+# was rebuilt mid-session and a digest resolved 30 min earlier then failed
+# "manifest unknown". Resolve any future move by PULLING, never a registry HEAD:
+#   docker pull <tag> && docker inspect --format '{{index .RepoDigests 0}}' <tag>
+#   pinned:  sha256:PIN_YOUR_OWN_DIGEST
+#   built:   2026-08-04T17:51:56Z
+#   version: llama.cpp 10283 (b7b85da9c)  <- FORK counter, NOT comparable to mainline
+
+# DS4 cold-loads in 3–11 min depending on page cache; do not let systemd give up.
+TimeoutStartSec=900
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

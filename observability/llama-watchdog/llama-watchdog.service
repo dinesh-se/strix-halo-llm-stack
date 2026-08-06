@@ -1,5 +1,5 @@
 [Unit]
-Description=llama-swap GPU device-lost watchdog + per-model metrics relay (:9611)
+Description=llama.cpp router GPU device-lost watchdog + per-model metrics relay (:9611)
 After=network.target docker.service
 
 [Service]

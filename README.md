@@ -1,3 +1,32 @@
+> ## ⚠️ 2026-08-06: llama-swap has been REPLACED by llama-server's router mode
+>
+> `llama.cpp` gained a built-in multi-model router (`llama-server` launched with
+> no `-m`, driven by `--models-preset` / `--models-max`). It does what llama-swap
+> did — per-model flags, child-process crash isolation, idle unload, residency —
+> so llama-swap is gone from this stack. See `config/models.ini` and
+> `systemd/llama-router.service`.
+>
+> **The reason it had to happen here:** DeepSeek-V4-Flash's Vulkan kernels
+> (Lightning Indexer + fused HC ops) and the `GGML_VK_MMID_F16B` MoE matmul path
+> exist only in kyuz0's *fork* build, not in mainline llama.cpp. Mainline
+> b10290 ran DS4 at **10.2 t/s vs 18.8** on the fork. Since llama-swap ships
+> mainline, no llama-swap image could ever serve DS4 well. ⚠️ kyuz0's build
+> number is a FORK counter — it is not comparable to mainline's, so "is build N
+> >= 10283?" is not a meaningful test.
+>
+> **Three things worth stealing from this config:**
+> 1. `--network host` is mandatory. Router children get *ephemeral* ports; under
+>    bridge networking they are unpublished and a host-side watchdog cannot reach
+>    `/slots` — which is the only signal distinguishing "wedged" from
+>    "mid-prefill".
+> 2. **Scope the bind-mounts.** There is no discovery-disable flag, and
+>    `--models-max` caps model COUNT, not SIZE — so one stray model id can pull a
+>    73 GiB model into memory. Mount only the model repos you serve (the repo
+>    ROOT, not the snapshot dir — the GGUFs are symlinks into `blobs/`), and
+>    point `LLAMA_CACHE` at an empty directory.
+> 3. **Role aliases do not exist.** The router overwrites `--alias` with the INI
+>    section name. Consumers must pin concrete model ids.
+
 # Strix Halo LLM Stack
 
 A local LLM serving stack for AMD Strix Halo (Ryzen AI Max+ 395 / Radeon

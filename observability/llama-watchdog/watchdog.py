@@ -7,10 +7,19 @@ gfx1151 (Strix Halo) has a known, currently unfixed amdgpu bug: under concurrent
 decode the ring times out, Vulkan returns VK_ERROR_DEVICE_LOST, and llama-server
 never rebuilds the lost device. It keeps running and keeps 500ing forever.
 
-llama-swap only notices a model dying if the *process exits*, which it does not,
-so nothing restarts it. On 2026-08-01 both models sat wedged for ~20 minutes
+The orchestrator only notices a model dying if the *process exits*, which it does
+not, so nothing restarts it. On 2026-08-01 both models sat wedged for ~20 minutes
 returning errors while every liveness check reported healthy. Recovery beats
 prevention here, because the bug is upstream and unfixed.
+
+PORTED 2026-08-06 from llama-swap to llama.cpp's own router server
+(`llama-router.service`, :9292). Endpoint mapping:
+    GET  /running                     -> GET  /models   (status.value=="loaded",
+                                                         child port from status.args)
+    POST /api/models/unload/<model>   -> POST /models/unload  {"model": ...}
+    re-warm via /v1/chat/completions  -> POST /models/load    {"model": ...}
+Metric names and the model= label schema are UNCHANGED, so scrape.yml and
+alert-rules.yaml needed no edits.
 
 THREE JOBS, ONE LOOP
 --------------------
@@ -25,18 +34,24 @@ That was proven during the incident — the HTTP layer is fine, it is the Vulkan
 device that is gone. The only probe that distinguishes them is one that actually
 decodes a token. Hence a real n_predict=1 completion, not a liveness endpoint.
 
-TTL SAFETY: probe ONLY models already listed by /running, never by name.
-Waking an idle model would re-create the 2026-05-23 bug where a 15s Prometheus
-scrape reset llama-swap's idle timer and defeated `ttl` entirely. For the same
-reason every model-directed request here goes DIRECT to the llama-server port,
-never through llama-swap's /upstream proxy — direct requests never reach
-llama-swap, so they structurally cannot reset the idle timer.
+NEVER PROBE A MODEL BY NAME: probe ONLY models already reported `loaded`.
+⚠️ The REASON changed on 2026-08-06 and is now STRONGER, so do not "simplify"
+this away. Under llama-swap the danger was that a named request reset the proxy
+idle timer and defeated `ttl` (the 2026-05-23 bug, where a 15s Prometheus scrape
+made `ttl` inert). Under the router the danger is worse: a request naming an
+unloaded model triggers an AUTO-LOAD, and for DS4 that is 3-11 minutes and
+~98 GiB — which would also fight the image-gen eviction wrapper, whose entire
+job is keeping DS4 unloaded while sd-cli runs.
 
-NETWORK: llama-swap sits on llama-stack_default (172.20.x) and the upstream
-llama-servers bind ports inside that network only. VictoriaMetrics is on
-ai-stack (172.23.x) and CANNOT route there (verified: wget times out). The host
-can reach both. That is why this runs as a systemd --user service on the host
-and not as a container.
+NETWORK: the router runs with --network host, so its child llama-servers listen
+on EPHEMERAL ports on the host (44449, 52779, ... — re-read them every cycle,
+never cache). That is exactly why --network host is mandatory: under bridge
+networking those ports are unpublished and /slots would be unreachable, and
+/slots is the only thing distinguishing "wedged" from "mid-prefill". DS4's
+100k-token prefill takes 751s; without /slots this watchdog would unload it
+every ~4.5 minutes. VictoriaMetrics (ai-stack, 172.23.x) still cannot reach the
+children, which is why this runs as a systemd --user service on the host and
+relays their metrics rather than letting VM scrape them.
 """
 import json
 import os
@@ -49,9 +64,15 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-SWAP = os.environ.get("LLAMA_SWAP_URL", "http://127.0.0.1:9292")
-# Host-side address of the llama-swap container, where the upstream
-# llama-server processes actually listen. Resolved at startup if unset.
+# 2026-08-06: llama-swap was replaced by llama.cpp's own router server
+# (`llama-router.service`). LLAMA_SWAP_URL is still honoured as a fallback so
+# that restoring an old watchdog.env is harmless.
+ROUTER = os.environ.get("LLAMA_ROUTER_URL",
+                        os.environ.get("LLAMA_SWAP_URL", "http://127.0.0.1:9292"))
+# Host-side address of the child llama-server processes. The router runs with
+# --network host, so children listen on ephemeral ports in the HOST namespace
+# and 127.0.0.1 is correct. (Under llama-swap this required a
+# `docker inspect llama-swap` to find a bridge IP; that is gone.)
 UPSTREAM_HOST = os.environ.get("LLAMA_UPSTREAM_HOST", "")
 ADDR = ("0.0.0.0", int(os.environ.get("WATCHDOG_PORT", "9611")))
 
@@ -64,7 +85,21 @@ PROBE_TIMEOUT = float(os.environ.get("PROBE_TIMEOUT", "90"))
 FAIL_THRESHOLD = int(os.environ.get("FAIL_THRESHOLD", "3"))
 # Never recover more than once per this window — a recovery loop against a
 # genuinely dead GPU would be worse than sitting still and alerting.
-RECOVERY_COOLDOWN = float(os.environ.get("RECOVERY_COOLDOWN", "900"))
+# ⚠️ 1800, raised from 900 on 2026-08-06. DS4 cold-loads in 3–11 minutes, so a
+# 900s cooldown could fire a second "recovery" while the first reload was still
+# in progress, cycling a healthy model forever.
+RECOVERY_COOLDOWN = float(os.environ.get("RECOVERY_COOLDOWN", "1800"))
+# 🔴 Do not probe a model for this long after it first appears `loaded`.
+# Guards against the watchdog "recovering" a model that was merely still coming
+# up — which never converges, because each recovery restarts the same load.
+# 300s, not the 900 first written: MEASURED 2026-08-06 that the router only
+# flips a model to `loaded` once its child actually answers (a completion
+# succeeded immediately after the flip, and the separate `loading` state covers
+# the 3-11 min DS4 window). So a long grace would blind the watchdog for no
+# benefit. This is margin for the gap between "child up" and "first token", not
+# for the load itself. Note a probe queued behind a long prefill is already
+# handled separately and better, by slot_busy_advancing().
+PROBE_GRACE_SECONDS = float(os.environ.get("PROBE_GRACE_SECONDS", "300"))
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -106,7 +141,13 @@ _state = {
     "probe_failures": 0,  # counter
     "probe_busy": 0,      # counter — probes that timed out behind real work
     "alerts_failed": 0,   # counter
-    "last_recovery": 0.0,
+    "last_recovery": {},  # model -> timestamp. Per-model: on 2026-08-04 a full
+                          # GPU reset wedged the 27b AND 35b together; a shared
+                          # cooldown let the 27b's recovery block the 35b's for
+                          # 15 more minutes of 500s.
+    "first_seen": {},     # model -> timestamp it was first observed `loaded`.
+                          # Drives PROBE_GRACE_SECONDS; cleared when a model
+                          # leaves the loaded set so a reload restarts the grace.
     "loop_errors": 0,
     "hindsight_up": 1,          # gauge, starts optimistic like probe_ok does
     "hindsight_consec_fail": 0,
@@ -136,43 +177,53 @@ def http(url: str, data: bytes | None = None, timeout: float = 10,
 
 
 def resolve_upstream_host() -> str:
-    """IP of the llama-swap container on its own network."""
-    if UPSTREAM_HOST:
-        return UPSTREAM_HOST
-    import subprocess
-    try:
-        out = subprocess.run(
-            ["docker", "inspect", "llama-swap", "--format",
-             "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}"],
-            capture_output=True, text=True, timeout=10, check=True,
-        ).stdout.split()
-        if out:
-            return out[0]
-    except Exception as e:  # noqa: BLE001
-        log(f"WARN could not resolve llama-swap IP: {e}")
-    return "127.0.0.1"
+    """Host-side address of the router's child llama-server processes.
+
+    The router runs with --network host (mandatory: children get ephemeral
+    ports, and under bridge networking they would be unpublished and /slots
+    unreachable), so children are simply on loopback.
+    """
+    return UPSTREAM_HOST or "127.0.0.1"
 
 
 def running_models(host: str) -> list[dict]:
-    """Models llama-swap currently has loaded, with their upstream ports.
+    """Models the router currently has LOADED, with their child ports.
 
-    /running is a llama-swap API endpoint, not a model proxy route, so polling
-    it does not count as model activity for ttl purposes.
+    GET /models is a router control endpoint, not a model proxy route, so
+    polling it never counts as model activity.
+
+    Shape (verified 2026-08-06 against llama.cpp router build 10283):
+      {"data": [{"id": "...", "aliases": [],
+                 "status": {"value": "unloaded"|"loading"|"loaded",
+                            "failed": bool|None, "exit_code": int|None,
+                            "args": ["/usr/bin/llama-server", ..., "--port", "44449", ...]}}]}
+
+    `status.value == "loaded"` replaces llama-swap's `state == "ready"`, and the
+    child port is parsed out of the resolved argv rather than from a `proxy`
+    URL. Note the port is EPHEMERAL — it changes on every reload, so it must be
+    re-read each cycle and never cached.
     """
-    status, body = http(f"{SWAP}/running", timeout=10)
+    status, body = http(f"{ROUTER}/models", timeout=10)
     if status != 200:
         return []
     try:
-        running = json.loads(body).get("running", [])
+        data = json.loads(body).get("data", [])
     except json.JSONDecodeError:
         return []
     out = []
-    for m in running:
-        if m.get("state") != "ready":
+    for m in data:
+        st = m.get("status") or {}
+        if st.get("value") != "loaded":
             continue
-        port = urllib.parse.urlparse(m.get("proxy", "")).port
+        args = st.get("args") or []
+        port = 0
+        if "--port" in args:
+            try:
+                port = int(args[args.index("--port") + 1])
+            except (IndexError, ValueError):
+                port = 0
         if port:
-            out.append({"model": m["model"], "port": port,
+            out.append({"model": m["id"], "port": port,
                         "url": f"http://{host}:{port}"})
     return out
 
@@ -293,33 +344,36 @@ def telegram(msg: str) -> None:
 
 
 def recover(model: str, host: str) -> bool:
-    """Unload the wedged model and re-warm it.
+    """Unload the wedged model and load it again.
 
-    ⚠️ POST /api/models/unload/<model>, NEVER GET /unload.
-    In llama-swap v234 `GET /unload` is NOT read-only and unloads EVERY model.
-    An agent enumerating routes called it during this investigation and took
-    both production models down for ~55s. Per-model POST is the only safe form.
+    ⚠️ ALWAYS pass an explicit model. The router's unload takes a JSON body;
+    a no-argument call was MEASURED on 2026-08-06 to return 500 and unload
+    nothing, so it fails safe — but the guard below is kept deliberately,
+    because llama-swap's equivalent (`GET /unload`) was NOT read-only and once
+    took both production models down for ~55s when an agent enumerated routes.
+    Do not remove the guard on the grounds that the current server is safe.
     """
+    if not model:
+        log("RECOVER refused: empty model name")
+        return False
+
     log(f"RECOVER {model}: unloading")
-    status, body = http(f"{SWAP}/api/models/unload/{urllib.parse.quote(model)}",
-                        data=b"", method="POST", timeout=120)
+    payload = json.dumps({"model": model}).encode()
+    status, body = http(f"{ROUTER}/models/unload", data=payload, method="POST",
+                        timeout=120)
     if status not in (200, 202, 204):
         log(f"RECOVER {model}: unload returned {status} {body[:200]}")
 
-    log(f"RECOVER {model}: re-warming")
-    warm = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": "ok"}],
-        "max_tokens": 1,
-        "chat_template_kwargs": {"enable_thinking": False},
-    }).encode()
+    log(f"RECOVER {model}: loading")
     t0 = time.perf_counter()
-    # Through llama-swap on purpose: this one must go via the proxy so that
-    # llama-swap is the thing that starts the process back up.
-    status, body = http(f"{SWAP}/v1/chat/completions", data=warm, timeout=600)
+    # Explicit /models/load, not a fake inference request. The router owns
+    # lifecycle now, so asking it directly is both clearer and avoids burning a
+    # real completion. Timeout must cover DS4's 3-11 min cold load.
+    status, body = http(f"{ROUTER}/models/load", data=payload, method="POST",
+                        timeout=900)
     dt = time.perf_counter() - t0
-    ok = status == 200
-    log(f"RECOVER {model}: re-warm {'ok' if ok else 'FAILED'} in {dt:.1f}s"
+    ok = status in (200, 202, 204)
+    log(f"RECOVER {model}: load {'ok' if ok else 'FAILED'} in {dt:.1f}s"
         f"{'' if ok else ' ' + body[:200]}")
     return ok
 
@@ -328,8 +382,29 @@ def probe_loop(host: str) -> None:
     while True:
         try:
             models = running_models(host)
+            now = time.time()
+            with _lock:
+                seen = _state["first_seen"]
+                live = {m["model"] for m in models}
+                for gone in [k for k in seen if k not in live]:
+                    del seen[gone]          # reset grace on unload/reload
+                for m in models:
+                    seen.setdefault(m["model"], now)
             for m in models:
                 name = m["model"]
+                # 🔴 LOAD GRACE. The router flips a model to `loaded` as soon as
+                # its child process is up, but DS4 needs minutes more before it
+                # will answer. Probing through that window produces
+                # FAIL_THRESHOLD consecutive timeouts and "recovers" a model
+                # that was only ever loading — and since each recovery restarts
+                # the same load, it never converges.
+                with _lock:
+                    age = now - _state["first_seen"].get(name, now)
+                if age < PROBE_GRACE_SECONDS:
+                    with _lock:
+                        _state["probe_ok"][name] = 1     # optimistic while loading
+                        _state["consec_fail"][name] = 0
+                    continue
                 slots_before = slots_progress(m)
                 ok, lost, dt, detail = probe(m)
 
@@ -361,7 +436,7 @@ def probe_loop(host: str) -> None:
                     fails = _state["consec_fail"][name]
                     if lost:
                         _state["device_lost"] += 1
-                    since_recovery = time.time() - _state["last_recovery"]
+                    since_recovery = time.time() - _state["last_recovery"].get(name, 0.0)
 
                 log(f"PROBE {name} FAILED ({fails}/{FAIL_THRESHOLD}) "
                     f"device_lost={lost} {dt:.1f}s {detail}")
@@ -374,7 +449,7 @@ def probe_loop(host: str) -> None:
                     continue
 
                 with _lock:
-                    _state["last_recovery"] = time.time()
+                    _state["last_recovery"][name] = time.time()
                     _state["recoveries"] += 1
                 telegram(
                     f"🔴 <b>llama-watchdog</b>\nModel <b>{name}</b> is wedged "
@@ -524,7 +599,7 @@ def render() -> str:
         "# TYPE llama_watchdog_alerts_failed_total counter",
         "# HELP llama_watchdog_loop_errors_total Unhandled errors caught in the background loops",
         "# TYPE llama_watchdog_loop_errors_total counter",
-        "# HELP llama_watchdog_models_loaded Models llama-swap currently reports as ready",
+        "# HELP llama_watchdog_models_loaded Models the router currently reports as loaded",
         "# TYPE llama_watchdog_models_loaded gauge",
         f"llama_watchdog_recoveries_total {recoveries}",
         f"llama_watchdog_device_lost_total {device_lost}",
@@ -585,7 +660,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     host = resolve_upstream_host()
-    log(f"llama-watchdog starting: upstream={host} swap={SWAP} "
+    log(f"llama-watchdog starting: upstream={host} router={ROUTER} "
         f"probe={PROBE_INTERVAL}s scrape={SCRAPE_INTERVAL}s "
         f"threshold={FAIL_THRESHOLD} cooldown={RECOVERY_COOLDOWN}s "
         f"hindsight={HINDSIGHT_URL or '(disabled)'} "

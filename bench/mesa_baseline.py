@@ -8,6 +8,7 @@ on every run so PP rates reflect the actual compute path.
 Output is stable Markdown so two runs can be diffed.
 """
 import json
+import os
 import re
 import statistics
 import subprocess
@@ -24,7 +25,8 @@ BASE = "http://127.0.0.1:9292"
 # (Earlier history: was ["qwen3.6-35b", "granite-4.1-8b"]; granite was dropped
 # 2026-05-19 and this script was un-runnable until 2026-08-01.)
 MODELS = ["deepseek-v4-flash", "gemma4-e4b"]
-LOG_DIR = "/home/dinesh-se/llama-stack/logs"
+LOG_DIR = os.environ.get("LLAMA_LOG_DIR",
+                        os.path.expanduser("~/llama-stack/logs"))
 ITERS = 4  # 1 warmup (discarded) + 3 measured
 N_PREDICT = 128
 

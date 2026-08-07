@@ -30,22 +30,32 @@
 # Strix Halo LLM Stack
 
 A local LLM serving stack for AMD Strix Halo (Ryzen AI Max+ 395 / Radeon
-8060S) unified-memory hardware, running [llama-swap](https://github.com/mostlygeek/llama-swap)
-on Vulkan/RADV. Three co-resident models (an always-on orchestrator, an
-on-demand coding model, and a fast/light aux model) sized to fit inside a
-single BIOS VRAM carveout with no swapping between them.
+8060S) unified-memory hardware, running **llama.cpp's built-in router mode**
+on Vulkan/RADV: a small always-resident aux model plus one heavy model, with
+the heavy slot swapped on demand.
 
 This isn't a custom container image — it's the config, kernel tuning, and
-hard-won gotchas around the stock upstream `llama-swap:vulkan` image. If
-you're looking for a from-source build toolbox, see
+hard-won gotchas around a stock upstream image. If you're looking for a
+from-source build toolbox, see
 [kyuz0/amd-strix-halo-toolboxes](https://github.com/kyuz0/amd-strix-halo-toolboxes),
-which this setup draws on for backend benchmarking.
+which this stack runs on (its fork carries Vulkan kernels mainline lacks) and
+draws on for backend benchmarking.
 
 ## Hardware
 
 - AMD Ryzen AI Max+ 395 (Strix Halo), Radeon 8060S iGPU (RADV GFX1151)
-- 128 GiB unified RAM, BIOS UMA carveout set to 96 GiB VRAM / ~30 GiB OS
+- 128 GiB unified RAM
+- BIOS UMA carveout set to **512 MB**, giving **~124 GiB of GTT**
 - Ubuntu, current HWE kernel track
+
+> ⚠️ **The carveout should be small, not large.** An earlier revision of this
+> repo told you to set a 96 GiB VRAM carveout. That was wrong on Linux — it is
+> a *Windows* constraint. On Linux the GPU reaches unified memory through GTT,
+> and a large carveout just fences off memory the OS can no longer use, while
+> capping you *below* what GTT would have given. Measured here: dropping the
+> carveout 96 GiB → 512 MB raised usable GPU memory to ~124 GiB and improved
+> production prefill by 19–94%. See [`host/tuning.md`](host/tuning.md) for the
+> VRAM-vs-GTT distinction.
 
 ## Why Vulkan/RADV, not ROCm
 
@@ -58,61 +68,102 @@ Mesa version is irrelevant to inference performance.
 
 ## Model lineup
 
-| Role | Model | Quant | KV | Residency | Measured (llama.cpp b10200) |
+**One always-resident aux model, plus one of two heavy models.**
+
+| Role | Model | Quant | KV | Size | Residency |
 |---|---|---|---|---|---|
-| `orchestrator` | Qwen3.6-35B-A3B (MTP) | Q8_0 | q8_0 | always resident | 92.6 t/s TG, 831 t/s PP |
-| `coder` | Qwen3.6-27B (MTP) | Q6_K | bf16 | on-demand, 30 min idle TTL | 21.2 t/s TG, 218 t/s PP @16.7k, 0.84 MTP accept |
-| `aux-fast` | Gemma 4 12B QAT (MTP) | Q4_K_XL | q8_0 | on-demand, 10 min idle TTL | 87.3 t/s TG (median, high variance), 456 t/s PP, 0.85 MTP accept |
+| `aux-fast` | Gemma 4 E4B QAT (MTP) | Q4_K_XL | q8_0 | 4.9 GiB | always resident |
+| heavy (default) | Ornith 1.0 35B | Q8_0 | q8_0 | 34.4 GiB | resident by default |
+| heavy (opt-in) | DeepSeek-V4-Flash | UD-IQ3_XXS | q8_0 | ~97.5 GiB | on demand, evicts Ornith |
 
-All three fit co-resident within the 96 GiB carveout with headroom to spare
-(measured: 84.9 GiB with all three loaded; the coder alone is 28.3 GiB at
-131k context).
+**The two heavy models cannot coexist** — 34.4 + 97.5 + 4.9 = 137 GiB against
+~124 GiB of GTT. [`tools/swap-model.sh`](tools/swap-model.sh) does the
+unload-then-load in the right order:
 
-Two notes on reading that table honestly:
+```sh
+tools/swap-model.sh status     # which heavy model is resident
+tools/swap-model.sh ornith     # evicts DS4, loads Ornith
+tools/swap-model.sh ds4        # evicts Ornith, loads DS4
+```
 
-- **The coder is the slow one on purpose.** Q6_K + bf16 KV was chosen for
-  output quality; it decodes roughly 25% slower than the IQ4_XS + q4_0 config
-  this repo shipped earlier. If VRAM or latency matters more to you than
-  coding accuracy, that older combination is a reasonable trade.
-- **Measure MTP acceptance on varied text.** A repeated-sentence benchmark
-  prompt pushes acceptance to 1.000 on these models — the drafter is just
-  predicting the repetition. Every acceptance figure above comes from
-  randomized prose.
-The orchestrator also answers to role aliases (`classifier`, `extractor`) so
-downstream consumers can pin a stable name across future model swaps.
+Measured on this box:
 
-**Why not one big model for everything?** A model resident 24/7 that's also
-large enough to be a strong coder (e.g. ~120B class) wants most of the 96 GiB
-carveout to itself, which leaves no room for a fast aux model or enough
-context for a second, on-demand coding-focused model. This lineup trades
-"one very strong resident model" for "three co-resident specialists," which
-suits an agentic/tool-calling workload better than a single large model does.
+| | Load time | GTT with aux | Throughput |
+|---|---|---|---|
+| Ornith 1.0 35B | ~30 s | 43.5 GiB | not yet measured locally |
+| DeepSeek-V4-Flash | ~3 min (warm cache) | ~106 GiB | 18.8 t/s TG, 250.7 t/s PP |
+| Gemma 4 E4B | seconds | 4.9 GiB | 114 t/s TG, 858 t/s PP (cold) |
+
+With Ornith resident the box sits at **43.5 GiB GTT with ~71 GiB of host RAM
+free**. With DS4 resident that free figure drops to **under 10 GiB**, which is
+the band this stack has been OOM-killed in twice — DS4 is genuinely a
+you-asked-for-it mode, not a default. Ornith's published throughput (53.2 t/s
+on this hardware class) comes from third-party benchmarks, not from this
+repo's harness, so it is deliberately left out of the table above.
+
+**Why not one big model for everything?** A model resident 24/7 that is also
+strong enough for hard reasoning wants essentially all of memory, leaving no
+room for a fast aux model to absorb background work (title generation,
+compression, memory writes) — which on an agentic workload is most of the
+request volume by count. Keeping a 4.9 GiB aux model permanently resident
+means that traffic never touches the heavy model's slots, and never pays its
+prefill.
+
+> ⚠️ **`--models-max` caps model COUNT, not SIZE.** It will not save you from
+> the 137 GiB arithmetic above. Ordering the swap yourself (unload, then load)
+> is the only thing that does.
 
 ## Quick start
 
-1. Set the BIOS VRAM carveout and kernel params — see [`host/tuning.md`](host/tuning.md).
-2. `docker compose up -d` — models auto-download via `-hf` on first request
-   (large; expect the first pull per model to take a while — `healthCheckTimeout`
-   is set generously in `config/llama-swap.yaml` for exactly this).
-3. `curl http://localhost:9292/v1/models` to confirm the lineup is live.
-4. Size any model swap first: `python3 tools/gguf-vram-estimator.py <gguf> -c <ctx>`.
+1. Set the BIOS VRAM carveout (small — see the warning above) and kernel
+   params — see [`host/tuning.md`](host/tuning.md).
+2. Download the GGUFs you intend to serve, and edit the paths in
+   [`config/models.ini`](config/models.ini). The placeholders
+   (`YOUR_SNAPSHOT_HASH`) mark what you must fill in.
+3. Copy [`systemd/llama-router.service`](systemd/llama-router.service) to
+   `~/.config/systemd/user/`, then replace `/home/YOUR_USER/` throughout and
+   pin your own image digest (`PIN_YOUR_OWN_DIGEST`) — resolve it by *pulling*,
+   never from a registry HEAD:
+   ```sh
+   docker pull <tag> && docker inspect --format '{{index .RepoDigests 0}}' <tag>
+   ```
+4. `systemctl --user daemon-reload && systemctl --user enable --now llama-router`
+5. `curl http://localhost:9292/v1/models` to confirm the lineup is live.
+6. Size any model swap first: `python3 tools/gguf-vram-estimator.py <gguf> -c <ctx>`
+   — but see the estimator caveat under Known gotchas.
+
+> ⚠️ **`models.ini` is bind-mounted into a running container and is only read
+> when a child spawns.** Editing it — or the unit — changes nothing until you
+> `systemctl --user daemon-reload && systemctl --user restart llama-router`.
+> Skipping that reload produces a very confusing failure: clients are
+> configured for a model the router has never heard of and every request comes
+> back `400 - model '<id>' not found`, while the config on disk looks correct.
+> `systemctl cat llama-router` warns `changed on disk … version systemd has
+> loaded is outdated` — read that line.
 
 ## Known gotchas
 
 - **llama.cpp Vulkan GPU detection is non-monotonic across builds** — some
   builds silently fall back to CPU with no error, just much lower throughput.
-  Always probe `--list-devices` before bumping the pinned image (see
-  `docker-compose.yml` for the known-good/bad build list this stack has hit).
+  Always probe `--list-devices` before bumping the pinned image. Pin the
+  image **by digest**, not by tag: a version-pinned tag was rebuilt under this
+  stack mid-session once, and a digest resolved 30 minutes earlier then failed
+  `manifest unknown`.
 - **MXFP4 quants were broken on Vulkan RADV in older Mesa/llama.cpp builds**
   and produced garbage output — fixed upstream; confirmed clean as of the
   build pinned in this repo.
-- **A metrics scraper hitting `/upstream/<model>/metrics` on a short interval
-  resets llama-swap's idle-eviction counter on every scrape**, making a `ttl`
-  setting functionally inert. If you wire up Prometheus/VictoriaMetrics
-  scraping, don't point it at the per-model upstream endpoints for a model
-  you expect to idle-evict. See [`observability/llama-watchdog`](observability/llama-watchdog)
-  for a scraper that avoids this by going direct to the upstream llama-server
-  process instead of through llama-swap's proxy.
+- *(Historical, llama-swap era — kept because the shape recurs.)* **A metrics
+  scraper hitting `/upstream/<model>/metrics` on a short interval resets
+  llama-swap's idle-eviction counter on every scrape**, making a `ttl` setting
+  functionally inert. Any orchestrator that treats "was polled" as "was used"
+  has this bug. If you wire up Prometheus/VictoriaMetrics scraping, don't point
+  it at per-model endpoints for a model you expect to idle-evict.
+- **A model id containing a dot will corrupt YAML config written by a
+  dotted-path setter.** Adding `ornith-1.0-35b` to a downstream client's config
+  produced `ornith-1: {0-35b: {context_length: ...}}` — the id was split on the
+  `.` in "1.0". It is *valid YAML*, so nothing errors and no log line appears;
+  the model simply has no configured context window. After editing any config
+  by tooling, re-read it and eyeball the keys.
 - **A wedged GPU can pass every liveness check.** `VK_ERROR_DEVICE_LOST` on
   this hardware class (see `host/tuning.md`) leaves llama-server alive,
   answering `/health` and `/v1/models` with 200, while every real completion
@@ -163,7 +214,7 @@ suits an agentic/tool-calling workload better than a single large model does.
 ## GPU watchdog + metrics relay
 
 [`observability/llama-watchdog`](observability/llama-watchdog) is a small
-(~600-line, stdlib-only) Python service that runs alongside llama-swap and
+(~600-line, stdlib-only) Python service that runs alongside the router and
 does three things in one loop:
 
 1. **Probes every loaded model with a real one-token completion**, not a
@@ -177,9 +228,13 @@ does three things in one loop:
    only progressing token counters tell them apart), so it won't kill a model
    that's just doing real work under `--parallel 1`.
 3. **Relays each model's `llamacpp:*` metrics** to whatever's scraping
-   `:9611`, going **direct to the upstream llama-server** rather than through
-   llama-swap's proxy — scraping through the proxy resets the idle-eviction
-   timer on every poll and makes `ttl` inert (see Known gotchas above).
+   `:9611`, going **direct to the child llama-server** rather than through the
+   orchestrator's proxy — see the idle-eviction gotcha above for why that
+   indirection is worth avoiding.
+
+Note that the router gives children **ephemeral** ports, so the watchdog can
+only reach a child's `/slots` if the container runs with `--network host`.
+That is why the unit sets it, and it is what makes point 2 possible at all.
 
 Optionally probes a companion service's `/health` too (disabled by default —
 see `HINDSIGHT_URL` in `watchdog.env.example`), for anything else you run
@@ -202,19 +257,25 @@ idle-timer reason above.
 
 ## Benchmarking
 
-`bench/` has three scripts against the OpenAI-compatible endpoint:
+`bench/mesa_baseline.py [out.md]` runs a PP/TG baseline per model against the
+OpenAI-compatible endpoint, for before/after Mesa or llama.cpp version
+comparisons. Produces diffable Markdown. Set `LLAMA_LOG_DIR` to control where
+it writes.
 
-- `mesa_baseline.py [out.md]` — PP/TG baseline per model, for before/after
-  Mesa or llama.cpp version comparisons. Produces diffable Markdown.
-- `measure.py` / `measure_qwen.py` — streaming TTFT + steady-state TG across
-  a small fixed prompt set (the `_qwen` variant also compares thinking-mode
-  on/off).
-- `toolcall.py` — a 10-case tool-routing fidelity check for an
-  orchestrator-style model deciding between delegate/search tools.
+(Earlier revisions of this repo also shipped `measure.py`, `measure_qwen.py`
+and `toolcall.py`. They were pinned to the retired Qwen lineup and were dropped
+rather than left to rot; they're in git history if you want them.)
 
 `tools/gguf-vram-estimator.py` estimates total VRAM (weights + KV cache) for
 a candidate GGUF at a given context length, reading only the GGUF header —
 no need to download or load the full model first.
+
+> ⚠️ **The estimator is wrong on hybrid/state-space models.** It assumes every
+> block carries a KV cache. On a model with `*.ssm.*` metadata (state-space
+> layers hold a fixed-size state instead), it overstated KV by **~4×** here —
+> 32.5 GiB predicted against ~8.0 GiB measured, which produced a confident and
+> completely wrong "this won't fit" call. Grep the GGUF metadata for `ssm.`
+> first, and if it's there, measure instead of estimating.
 
 ## License
 

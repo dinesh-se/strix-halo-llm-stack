@@ -100,6 +100,42 @@ RECOVERY_COOLDOWN = float(os.environ.get("RECOVERY_COOLDOWN", "1800"))
 # for the load itself. Note a probe queued behind a long prefill is already
 # handled separately and better, by slot_busy_advancing().
 PROBE_GRACE_SECONDS = float(os.environ.get("PROBE_GRACE_SECONDS", "300"))
+# 🔴 30, not the 10 this was hardcoded to until 2026-08-07. /slots is served off
+# the child's main loop, which during a long prefill is busy for one whole
+# ubatch at a time — MEASURED 17s per 2048-token chunk at 70k context on DS4. A
+# 10s timeout therefore failed roughly half the time *because the model was
+# working*, and each failure was scored as evidence it was wedged. That is what
+# unloaded a healthy DS4 at 14:14:03 on 2026-08-07, 468s into a 75.7k-token
+# prefill that was 92% done.
+SLOTS_TIMEOUT = float(os.environ.get("SLOTS_TIMEOUT", "30"))
+# Consecutive cycles where /slots was UNREADABLE (not "not advancing") that we
+# will excuse before falling through to the normal failure path. Bounds the risk
+# of the inference in slot_busy_advancing()'s docstring being wrong.
+MAX_INCONCLUSIVE = int(os.environ.get("MAX_INCONCLUSIVE", "5"))
+
+# ---------------------------------------------------------------------------
+# HEAVY-MODEL MUTEX
+# ---------------------------------------------------------------------------
+# The router has NO memory awareness and --models-max caps model COUNT, not
+# size. On 2026-08-07 a Hermes /model switch made the next chat request trigger
+# `ensure_model` for DS4 (~98 GiB) while ornith (~34 GiB) was resident; 90
+# seconds later the kernel OOM-killed ornith. Nothing in the router prevents
+# this, and it is not limited to manual swaps —
+# HINDSIGHT_API_REFLECT_LLM_MODEL=deepseek-v4-flash means a background reflect
+# can trigger the same autoload with nobody at the keyboard.
+#
+# We deliberately do NOT fix this with --no-models-autoload: that would break
+# Hermes' /model command (the first request after a switch would 4xx instead of
+# loading). Instead we let the autoload happen and evict the incumbent out from
+# under it. The race margin is large — the OOM landed 90s into a 3-11 minute
+# load, and this poll evicts within ~5s.
+HEAVY_MODELS = [s.strip() for s in os.environ.get(
+    "HEAVY_MODELS", "ornith-1.0-35b,deepseek-v4-flash").split(",") if s.strip()]
+HEAVY_MUTEX = os.environ.get("HEAVY_MUTEX", "1") == "1"
+HEAVY_MUTEX_INTERVAL = float(os.environ.get("HEAVY_MUTEX_INTERVAL", "3"))
+# Per-model floor between evictions, so a model that keeps being re-requested
+# cannot drive an unload/autoload flap loop.
+HEAVY_EVICT_COOLDOWN = float(os.environ.get("HEAVY_EVICT_COOLDOWN", "60"))
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -140,6 +176,13 @@ _state = {
     "device_lost": 0,     # counter
     "probe_failures": 0,  # counter
     "probe_busy": 0,      # counter — probes that timed out behind real work
+    "probe_inconclusive": 0,  # counter — cycles where /slots was UNREADABLE, so
+                          # we could neither confirm progress nor a wedge
+    "consec_inconclusive": {},  # model -> int, capped by MAX_INCONCLUSIVE
+    "heavy_evictions": 0,  # counter — heavy-model mutex unloads performed
+    "heavy_coresident": 0,  # gauge — 1 while two heavy models overlap
+    "heavy_since": {},    # model -> timestamp first seen loaded (mutex tiebreak)
+    "last_evict": {},     # model -> timestamp of last mutex eviction
     "alerts_failed": 0,   # counter
     "last_recovery": {},  # model -> timestamp. Per-model: on 2026-08-04 a full
                           # GPU reset wedged the 27b AND 35b together; a shared
@@ -228,14 +271,31 @@ def running_models(host: str) -> list[dict]:
     return out
 
 
-def probe(m: dict) -> tuple[bool, bool, float, str]:
-    """Decode one real token. Returns (ok, device_lost, latency, detail)."""
-    body = json.dumps({
+def probe(m: dict, id_slot: int | None = None) -> tuple[bool, bool, float, str]:
+    """Decode one real token. Returns (ok, device_lost, latency, detail).
+
+    ``id_slot`` PINS the probe to one slot, and matters more than it looks.
+    This prompt is 2 tokens of raw /completion, so it scores f_sim ~0 against
+    any real conversation and llama.cpp falls through to LRU slot selection —
+    which means the probe lands on whichever slot is idle and OVERWRITES its
+    cached prefix. On 2026-08-07 that was DS4's slot 1 at 14:07:00, 14:09:55 and
+    14:12:33, i.e. we were destroying a long conversation's prompt cache roughly
+    once a minute and making the user pay a full re-prefill for it.
+
+    Pinning is safe because llama.cpp checks LCP similarity BEFORE LRU, so an
+    ongoing conversation reliably re-selects its own slot. Probing the last slot
+    therefore leaves slot 0 permanently undisturbed on a --parallel 2 model. A
+    device-lost fault is device-wide, so one slot is enough to detect it.
+    """
+    payload = {
         "prompt": "ok",
         "n_predict": 1,
         "temperature": 0,
         "cache_prompt": True,
-    }).encode()
+    }
+    if id_slot is not None:
+        payload["id_slot"] = id_slot
+    body = json.dumps(payload).encode()
     t0 = time.perf_counter()
     status, text = http(f"{m['url']}/completion", data=body, timeout=PROBE_TIMEOUT)
     dt = time.perf_counter() - t0
@@ -257,7 +317,7 @@ def slots_progress(m: dict) -> tuple | None:
     ``n_decoded`` moved under ``next_token`` in newer llama.cpp builds; both
     shapes are read so a container bump can't silently blind this check.
     """
-    status, text = http(f"{m['url']}/slots", timeout=10)
+    status, text = http(f"{m['url']}/slots", timeout=SLOTS_TIMEOUT)
     if status != 200:
         return None
     try:
@@ -284,19 +344,51 @@ def slots_progress(m: dict) -> tuple | None:
     return tuple(sig)
 
 
+def pin_slot(sig: tuple | None) -> int | None:
+    """Slot id to pin probes to: the highest one. See probe()'s docstring.
+
+    Derived from the /slots snapshot the probe loop already took, so this costs
+    no extra request.
+    """
+    if not sig:
+        return None
+    ids = [s[0] for s in sig if isinstance(s[0], int)]
+    return max(ids) if ids else None
+
+
 def slot_busy_advancing(before: tuple | None, after: tuple | None) -> bool:
     """True when the server is demonstrably doing real work, not wedged.
 
-    Requires a slot still processing AND the counters to have moved. Returning
-    False on an unreadable /slots is deliberate: an unavailable endpoint must
-    fall through to the old fail-and-recover path rather than silently disarm
-    the watchdog.
+    Requires a slot still processing AND the counters to have moved. An
+    unreadable /slots (``None``) is NOT handled here — see slots_readable().
     """
     if before is None or after is None or not after:
         return False
     if not any(s[1] for s in after):
         return False
     return before != after
+
+
+def slots_readable(before: tuple | None, after: tuple | None) -> bool:
+    """Whether we actually got two /slots snapshots to compare.
+
+    🔴 THIS INVERTS THE PRE-2026-08-07 RULE, deliberately. The old code treated
+    an unreadable /slots as evidence of a wedge and let it count toward
+    FAIL_THRESHOLD. That is backwards:
+
+      - A device-lost server FAILS DECODE FAST and keeps serving HTTP — that is
+        the whole premise of this watchdog ("/health AND /v1/models BOTH PASS on
+        a wedged server"). Its main loop spins, so /slots answers promptly with
+        FROZEN counters, and slot_busy_advancing() correctly returns False.
+      - A healthy server mid-prefill is busy for one whole ubatch at a time
+        (~17s per chunk at 70k ctx on DS4), so /slots is exactly what times out.
+
+    So an unreadable /slots is evidence of a BUSY main loop, not a dead one, and
+    scoring it as a failure is what killed a healthy DS4 on 2026-08-07. The
+    caller therefore treats it as INCONCLUSIVE — capped by MAX_INCONCLUSIVE so a
+    genuinely unreachable child still reaches the recovery path.
+    """
+    return before is not None and after is not None
 
 
 def scrape(m: dict) -> str | None:
@@ -343,6 +435,51 @@ def telegram(msg: str) -> None:
             _state["alerts_failed"] += 1
 
 
+def model_state(model: str) -> str:
+    """Router's lifecycle value for one model: loaded|loading|unloaded|absent|unknown.
+
+    ⚠️ Reads `status.value` ONLY. `status.failed` is a sticky flag from the last
+    load attempt, not a liveness signal — ornith-1.0-35b reports failed=true
+    exit_code=1 from the 2026-08-07 OOM kill while sitting quietly at
+    value=unloaded. Conflating them would make every later decision wrong.
+    """
+    status, body = http(f"{ROUTER}/models", timeout=10)
+    if status != 200:
+        return "unknown"
+    try:
+        for m in json.loads(body).get("data", []):
+            if m.get("id") == model:
+                return (m.get("status") or {}).get("value") or "unknown"
+    except (json.JSONDecodeError, AttributeError):
+        return "unknown"
+    return "absent"
+
+
+def wait_unloaded(model: str, timeout: float = 180.0) -> bool:
+    """Block until the router stops reporting `model` as loaded.
+
+    The router's unload is ASYNC: it returns as soon as the child is told to
+    exit. Issuing the reload immediately is what made recovery fail on
+    2026-08-07 —
+
+        14:14:03 RECOVER deepseek-v4-flash: unloading
+        14:14:03 RECOVER deepseek-v4-flash: loading
+        14:14:03 RECOVER deepseek-v4-flash: load FAILED in 0.0s
+                 {"code":400,"message":"model is already running"}
+
+    — and it would have failed that way on every recovery this watchdog ever
+    attempted. Requires an explicit non-loaded state; "unknown" (router
+    unreachable) must never read as success.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        state = model_state(model)
+        if state in ("unloaded", "absent"):
+            return True
+        time.sleep(2)
+    return False
+
+
 def recover(model: str, host: str) -> bool:
     """Unload the wedged model and load it again.
 
@@ -362,7 +499,13 @@ def recover(model: str, host: str) -> bool:
     status, body = http(f"{ROUTER}/models/unload", data=payload, method="POST",
                         timeout=120)
     if status not in (200, 202, 204):
+        # 400 "model is not running" just means it died on its own first.
         log(f"RECOVER {model}: unload returned {status} {body[:200]}")
+
+    if not wait_unloaded(model):
+        log(f"RECOVER {model}: still loaded after 180s — ABORTING reload "
+            f"(a load now can only return 400 'model is already running')")
+        return False
 
     log(f"RECOVER {model}: loading")
     t0 = time.perf_counter()
@@ -406,7 +549,7 @@ def probe_loop(host: str) -> None:
                         _state["consec_fail"][name] = 0
                     continue
                 slots_before = slots_progress(m)
-                ok, lost, dt, detail = probe(m)
+                ok, lost, dt, detail = probe(m, pin_slot(slots_before))
 
                 # A timeout behind a long prefill is not a wedge. With
                 # --parallel 1 a single 85k-token prompt owns the only slot for
@@ -416,16 +559,36 @@ def probe_loop(host: str) -> None:
                 # queued behind. A device-lost signature is never excused this
                 # way — that is a real fault whatever the slots say.
                 if not ok and not lost:
-                    if slot_busy_advancing(slots_before, slots_progress(m)):
+                    slots_after = slots_progress(m)
+                    if slot_busy_advancing(slots_before, slots_after):
                         with _lock:
                             _state["probe_ok"][name] = 1
                             _state["probe_latency"][name] = dt
                             _state["probe_busy"] += 1
+                            _state["consec_inconclusive"][name] = 0
                         log(f"PROBE {name} BUSY after {dt:.1f}s — slots "
                             f"advancing, model healthy, not counting a failure")
                         continue
 
+                    # /slots unreadable: we know nothing. Excuse it up to
+                    # MAX_INCONCLUSIVE times — see slots_readable()'s docstring
+                    # for why this is the safe direction to err in.
+                    if not slots_readable(slots_before, slots_after):
+                        with _lock:
+                            n = _state["consec_inconclusive"].get(name, 0) + 1
+                            _state["consec_inconclusive"][name] = n
+                            _state["probe_inconclusive"] += 1
+                            _state["probe_latency"][name] = dt
+                        if n <= MAX_INCONCLUSIVE:
+                            log(f"PROBE {name} INCONCLUSIVE ({n}/{MAX_INCONCLUSIVE}) "
+                                f"after {dt:.1f}s — /slots unreadable, cannot "
+                                f"distinguish busy from wedged; not counting a failure")
+                            continue
+                        log(f"PROBE {name} INCONCLUSIVE {n}x (> {MAX_INCONCLUSIVE}) "
+                            f"— falling through to the failure path")
+
                 with _lock:
+                    _state["consec_inconclusive"][name] = 0
                     _state["probe_ok"][name] = 1 if ok else 0
                     _state["probe_latency"][name] = dt
                     if ok:
@@ -469,6 +632,127 @@ def probe_loop(host: str) -> None:
                 _state["loop_errors"] += 1
             log(f"ERROR probe_loop: {type(e).__name__}: {e}")
         time.sleep(PROBE_INTERVAL)
+
+
+def heavy_states() -> dict[str, str] | None:
+    """{model: status.value} for HEAVY_MODELS only, or None if unreadable.
+
+    Separate from running_models() because that filters to `loaded` models with
+    a resolvable child port, and the whole point here is to catch a model while
+    it is still `loading` — before its memory is committed.
+    """
+    status, body = http(f"{ROUTER}/models", timeout=5)
+    if status != 200:
+        return None
+    try:
+        data = json.loads(body).get("data", [])
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    out = {}
+    for m in data:
+        mid = m.get("id")
+        if mid in HEAVY_MODELS:
+            out[mid] = (m.get("status") or {}).get("value") or "unknown"
+    return out
+
+
+def pick_eviction_victim(states: dict[str, str], since: dict[str, float]) -> str | None:
+    """Which heavy model to unload when two are in memory at once.
+
+    Rules, in order:
+      1. Never evict a model that is `loading` — that is the one just requested,
+         and killing it mid-load would leave the caller with nothing.
+      2. Prefer evicting a `loaded` incumbent when something else is `loading`.
+      3. If several are `loaded` (no clear newcomer), evict the one resident
+         LONGEST and keep the most recent arrival, which is the better proxy for
+         what the user actually wants right now.
+    Returns None when there is nothing to do.
+
+    ⚠️ The HEAVY_MODELS filter is applied HERE as well as in heavy_states(), not
+    only there. gemma4-e4b is load-bearing for every consumer on the box (Hermes
+    title-gen and compression, Hindsight retain and consolidation), so "we only
+    ever pass it heavy models" must not be the single thing standing between it
+    and an unload.
+    """
+    states = {k: v for k, v in states.items() if k in HEAVY_MODELS}
+    active = {k: v for k, v in states.items() if v in ("loading", "loaded")}
+    if len(active) < 2:
+        return None
+    loaded = [k for k, v in active.items() if v == "loaded"]
+    if not loaded:
+        return None            # all still loading; rule 1 leaves nothing to evict
+    if len(loaded) == len(active):
+        # No newcomer to protect — evict the longest-resident.
+        return min(loaded, key=lambda k: since.get(k, 0.0))
+    # Something is loading: evict the incumbent that has been resident longest.
+    return min(loaded, key=lambda k: since.get(k, 0.0))
+
+
+def heavy_mutex_loop() -> None:
+    """Enforce "at most one heavy model resident" — the 2026-08-07 OOM fix.
+
+    See the HEAVY_MODELS block up top for why this lives here rather than being
+    solved with --no-models-autoload.
+    """
+    if not HEAVY_MUTEX or len(HEAVY_MODELS) < 2:
+        log(f"heavy-model mutex DISABLED (enabled={HEAVY_MUTEX}, "
+            f"models={HEAVY_MODELS})")
+        return
+    log(f"heavy-model mutex armed for {HEAVY_MODELS} "
+        f"(poll {HEAVY_MUTEX_INTERVAL}s, cooldown {HEAVY_EVICT_COOLDOWN}s)")
+    while True:
+        try:
+            states = heavy_states()
+            if states is None:
+                time.sleep(HEAVY_MUTEX_INTERVAL)
+                continue
+
+            now = time.time()
+            with _lock:
+                since = _state["heavy_since"]
+                for mid, val in states.items():
+                    if val == "loaded":
+                        since.setdefault(mid, now)
+                    else:
+                        since.pop(mid, None)
+                active = [k for k, v in states.items() if v in ("loading", "loaded")]
+                _state["heavy_coresident"] = 1 if len(active) > 1 else 0
+                snapshot = dict(since)
+                last_evict = dict(_state["last_evict"])
+
+            victim = pick_eviction_victim(states, snapshot)
+            if not victim:
+                time.sleep(HEAVY_MUTEX_INTERVAL)
+                continue
+            if now - last_evict.get(victim, 0.0) < HEAVY_EVICT_COOLDOWN:
+                time.sleep(HEAVY_MUTEX_INTERVAL)
+                continue
+
+            others = [f"{k}={v}" for k, v in states.items() if k != victim]
+            log(f"HEAVY-MUTEX: {len(active)} heavy models resident "
+                f"({', '.join(f'{k}={v}' for k, v in states.items())}) — "
+                f"evicting {victim}")
+            with _lock:
+                _state["last_evict"][victim] = now
+                _state["heavy_evictions"] += 1
+            payload = json.dumps({"model": victim}).encode()
+            status, body = http(f"{ROUTER}/models/unload", data=payload,
+                                method="POST", timeout=120)
+            ok = status in (200, 202, 204)
+            log(f"HEAVY-MUTEX: unload {victim} "
+                f"{'ok' if ok else f'FAILED {status} {body[:200]}'}")
+            telegram(
+                f"{'🟡' if ok else '🔴'} <b>llama-watchdog</b>\n"
+                f"Two heavy models were resident at once "
+                f"({', '.join(others)}) — this is the shape that OOM-killed "
+                f"ornith on 2026-08-07.\nEvicted <b>{victim}</b>: "
+                f"{'ok' if ok else f'FAILED ({status})'}."
+            )
+        except Exception as e:  # noqa: BLE001 - loop must never die
+            with _lock:
+                _state["loop_errors"] += 1
+            log(f"ERROR heavy_mutex_loop: {type(e).__name__}: {e}")
+        time.sleep(HEAVY_MUTEX_INTERVAL)
 
 
 def scrape_loop(host: str) -> None:
@@ -575,6 +859,9 @@ def render() -> str:
         device_lost = _state["device_lost"]
         failures = _state["probe_failures"]
         busy = _state["probe_busy"]
+        inconclusive = _state["probe_inconclusive"]
+        heavy_evictions = _state["heavy_evictions"]
+        heavy_coresident = _state["heavy_coresident"]
         alerts_failed = _state["alerts_failed"]
         loop_errors = _state["loop_errors"]
         hindsight_up = _state["hindsight_up"]
@@ -595,6 +882,12 @@ def render() -> str:
         "# TYPE llama_watchdog_probe_failures_total counter",
         "# HELP llama_watchdog_probe_busy_total Probes that timed out behind real work and were not counted as failures",
         "# TYPE llama_watchdog_probe_busy_total counter",
+        "# HELP llama_watchdog_probe_inconclusive_total Probes where /slots was unreadable, so busy could not be distinguished from wedged",
+        "# TYPE llama_watchdog_probe_inconclusive_total counter",
+        "# HELP llama_watchdog_heavy_evictions_total Heavy-model mutex evictions performed",
+        "# TYPE llama_watchdog_heavy_evictions_total counter",
+        "# HELP llama_watchdog_heavy_coresident Whether two heavy models are resident at once (1/0)",
+        "# TYPE llama_watchdog_heavy_coresident gauge",
         "# HELP llama_watchdog_alerts_failed_total Telegram alerts that could not be delivered",
         "# TYPE llama_watchdog_alerts_failed_total counter",
         "# HELP llama_watchdog_loop_errors_total Unhandled errors caught in the background loops",
@@ -605,6 +898,9 @@ def render() -> str:
         f"llama_watchdog_device_lost_total {device_lost}",
         f"llama_watchdog_probe_failures_total {failures}",
         f"llama_watchdog_probe_busy_total {busy}",
+        f"llama_watchdog_probe_inconclusive_total {inconclusive}",
+        f"llama_watchdog_heavy_evictions_total {heavy_evictions}",
+        f"llama_watchdog_heavy_coresident {heavy_coresident}",
         f"llama_watchdog_alerts_failed_total {alerts_failed}",
         f"llama_watchdog_loop_errors_total {loop_errors}",
         f"llama_watchdog_models_loaded {len(metrics)}",
@@ -665,12 +961,15 @@ if __name__ == "__main__":
         f"threshold={FAIL_THRESHOLD} cooldown={RECOVERY_COOLDOWN}s "
         f"hindsight={HINDSIGHT_URL or '(disabled)'} "
         f"hindsight_probe={HINDSIGHT_PROBE_INTERVAL}s "
+        f"slots_timeout={SLOTS_TIMEOUT}s max_inconclusive={MAX_INCONCLUSIVE} "
         f"listen={ADDR[0]}:{ADDR[1]}")
     if "--once" in sys.argv:
         # Diagnostic mode: probe + scrape once, print the exposition, exit.
         for mm in running_models(host):
-            ok, lost, dt, detail = probe(mm)
-            log(f"probe {mm['model']}: ok={ok} device_lost={lost} {dt:.2f}s {detail}")
+            pin = pin_slot(slots_progress(mm))
+            ok, lost, dt, detail = probe(mm, pin)
+            log(f"probe {mm['model']}: ok={ok} device_lost={lost} {dt:.2f}s "
+                f"id_slot={pin} {detail}")
             t = scrape(mm)
             with _lock:
                 _state["probe_ok"][mm["model"]] = 1 if ok else 0
@@ -686,6 +985,7 @@ if __name__ == "__main__":
         sys.exit(0)
     threading.Thread(target=probe_loop, args=(host,), daemon=True).start()
     threading.Thread(target=scrape_loop, args=(host,), daemon=True).start()
+    threading.Thread(target=heavy_mutex_loop, daemon=True).start()
     if HINDSIGHT_URL:
         threading.Thread(target=hindsight_loop, daemon=True).start()
     HTTPServer(ADDR, Handler).serve_forever()

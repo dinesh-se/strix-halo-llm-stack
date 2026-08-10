@@ -22,6 +22,23 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-10 — Docs correction: extractor retarget was never applied; network exposure recorded; no host firewall
+**Observed:** Audit of live state against `current.md` during a memory-note update (no infra change intended). Four discrepancies, all doc-side:
+1. **`extractor`/Hindsight-reflect pin.** `current.md` and the runtime `models.ini` header (2026-08-09) both claim `extractor` was retargeted qwen3.6-35b "so reflect stays on the resident heavy model". The live `hindsight-daemon.service` says `HINDSIGHT_API_REFLECT_LLM_MODEL=deepseek-v4-flash`. **The retarget was documented but never applied to the unit.** Gotcha #6 (the ~98 GiB unattended-autoload OOM path that killed llama-server on 2026-08-07 11:01:49) is therefore still OPEN, and the `models.ini` comment asserts a fix that does not exist.
+2. **No host firewall.** `/etc/ufw/ufw.conf` → `ENABLED=no`; firewalld + nftables inactive. `llama-router` binds `0.0.0.0:9292` with no auth (`unused-llama-router-direct` is a placeholder), Firecrawl `0.0.0.0:3002`, exporters `0.0.0.0:9610/9611/9100`. Any LAN device gets free inference, host/GPU telemetry, a Firecrawl SSRF pivot, and a one-request 98 GiB memory DoS. `current.md` recorded no bind addresses at all. **Trap:** `systemctl is-active ufw` returns `active` even when disabled (oneshot, `SubState=exited`) — it misled this audit until `ufw.conf` was read. Curling the host's own LAN IP also proves nothing (ufw accepts all on `lo`).
+3. **`swap-model.sh` path wrong** in `current.md` (`~/llama-stack/swap-model.sh` — does not exist; it lives at `~/Dev/strix-halo-llm-stack/tools/swap-model.sh`).
+4. **The two `models.ini` copies have drifted** (repo template vs runtime). Comment-only as of today, so no functional impact — but editing only the repo copy is a silent no-op.
+
+Also confirmed NOT drift: DS4 loaded / qwen3.6-35b evicted at the time of audit was a **user-initiated `swap-model.sh` load** for active work; the watchdog heavy-model mutex evicted qwen at 14:15:50 exactly as designed. Normal operation, logged here only to stop a future session "fixing" it.
+**Changed:** Docs only — no infra touched, by explicit instruction (DS4 was loaded for user work).
+- `current.md`: corrected the `extractor` row to `deepseek-v4-flash` + added a source-comparison table explaining which config wins and why; rewrote gotcha #6 as STILL OPEN; added a **Network exposure / bind addresses** section (port/bind/auth table, firewall state, the `is-active` trap, hardening steps incl. the mandatory `ufw allow from 172.16.0.0/12` for container→host traffic and the note that ufw cannot cover docker-published :3002); corrected the `swap-model.sh` path; flagged the dual-`models.ini` drift; added a note that residency inversion after a manual swap is normal and must not be logged as drift. `Last verified` → 2026-08-10 21:05 IST.
+- Claude memory: `feedback_update_memory_after_infra_change` rewritten around this SSoT + the Source vs. Runtime split; `pi_models_json_context_sync` corrected (item 1 named the retired `llama-swap.yaml`; now names both `models.ini` copies); `reference_strix_halo_llm_stack_repo` rewritten (repo is now the SOURCE half, not a publishing mirror); `swap-model.sh` path fixed in `llama_server_router_mode` + `MEMORY.md`.
+**Expected:** A session reading `current.md` no longer believes the OOM path is mitigated or that the box is firewalled. Two follow-up infra changes are now queued and explicitly NOT done: (a) retarget `HINDSIGHT_API_REFLECT_LLM_MODEL` in `hindsight-daemon.service` + `daemon-reload` + restart; (b) enable ufw + rebind Firecrawl to `127.0.0.1:3002`.
+**Refs:** live `systemctl --user cat hindsight-daemon.service`; `curl localhost:9292/models`; `journalctl --user -u llama-watchdog` (14:15:50 HEAVY-MUTEX eviction); `ss -tlnp`; `/etc/ufw/ufw.conf`; `docker network inspect` (172.17/172.18/172.23).
+**Smoke test:** None required — documentation-only change, no service touched, nothing restarted. Verified `llama-router.service`, `llama-watchdog.service`, `hindsight-daemon.service`, `hermes-gateway.service`, `hermes-dashboard.service` all still `active running` and DS4 still loaded after the edits.
+
+---
+
 ## 2026-08-10 — Repo consolidation: SSoT moved to strix-halo-llm-stack; Source vs. Runtime Data split documented
 **Observed:** The infra SSoT was built in `~/llama-stack` — a local-only repo with
 no remote. The GitHub-tracked repo is `~/Dev/strix-halo-llm-stack`

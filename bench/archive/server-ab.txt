@@ -1,0 +1,37 @@
+=== kernel A/B done, starting server config A/B ===
+# server config A/B -- gemma4
+# image ghcr.io/mostlygeek/llama-swap:v245-vulkan-b10200
+
+### gemma4  -sps 0.10 (current, llama.cpp default)
+  submitted prompt tokens : 127,890
+  actually prefilled      : 42,744
+  AMPLIFICATION           : 0.33x   (1.00 = perfect reuse)
+  wall time               : 98.9s
+
+### gemma4  -sps 0.5 (proposed)
+  submitted prompt tokens : 127,890
+  actually prefilled      : 21,460
+  AMPLIFICATION           : 0.17x   (1.00 = perfect reuse)
+  wall time               : 57.6s
+
+## summary
+  sps_default_0.10             amp 0.33x   wall 98.9s
+  sps_0.5                      amp 0.17x   wall 57.6s
+# server config A/B -- qwen27b
+# image ghcr.io/mostlygeek/llama-swap:v245-vulkan-b10200
+
+### 27b  -ub 1024 (current)
+  submitted prompt tokens : 122,484
+  actually prefilled      : 45,000
+  AMPLIFICATION           : 0.37x   (1.00 = perfect reuse)
+  wall time               : 231.6s
+
+### 27b  -ub 256 (proposed)
+  submitted prompt tokens : 122,484
+  actually prefilled      : 41,928
+  AMPLIFICATION           : 0.34x   (1.00 = perfect reuse)
+  wall time               : 203.7s
+
+## summary
+  ub_1024                      amp 0.37x   wall 231.6s
+  ub_256                       amp 0.34x   wall 203.7s

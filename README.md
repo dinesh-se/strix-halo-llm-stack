@@ -73,33 +73,32 @@ Mesa version is irrelevant to inference performance.
 | Role | Model | Quant | KV | Size | Residency |
 |---|---|---|---|---|---|
 | `aux-fast` | Gemma 4 E4B QAT (MTP) | Q4_K_XL | q8_0 | 4.9 GiB | always resident |
-| heavy (default) | Ornith 1.0 35B | Q8_0 | q8_0 | 34.4 GiB | resident by default |
-| heavy (opt-in) | DeepSeek-V4-Flash | UD-IQ3_XXS | q8_0 | ~97.5 GiB | on demand, evicts Ornith |
+| heavy (default) | Qwen3.6 35B A3B MTP | Q8_0 | q8_0 | 34 GiB | resident by default |
+| heavy (opt-in) | DeepSeek-V4-Flash | UD-IQ3_XXS | q8_0 | ~97.5 GiB | on demand, evicts Qwen3.6 |
 
-**The two heavy models cannot coexist** — 34.4 + 97.5 + 4.9 = 137 GiB against
+**The two heavy models cannot coexist** — 34 + 97.5 + 4.9 = 137 GiB against
 ~124 GiB of GTT. [`tools/swap-model.sh`](tools/swap-model.sh) does the
 unload-then-load in the right order:
 
 ```sh
 tools/swap-model.sh status     # which heavy model is resident
-tools/swap-model.sh ornith     # evicts DS4, loads Ornith
-tools/swap-model.sh ds4        # evicts Ornith, loads DS4
+tools/swap-model.sh qwen       # evicts DS4, loads Qwen3.6
+tools/swap-model.sh ds4        # evicts Qwen3.6, loads DS4
 ```
 
 Measured on this box:
 
 | | Load time | GTT with aux | Throughput |
 |---|---|---|---|
-| Ornith 1.0 35B | ~30 s | 43.5 GiB | not yet measured locally |
+| Qwen3.6 35B | ~30 s | 43.5 GiB | ~60 t/s TG (67 with MTP) |
 | DeepSeek-V4-Flash | ~3 min (warm cache) | ~106 GiB | 18.8 t/s TG, 250.7 t/s PP |
 | Gemma 4 E4B | seconds | 4.9 GiB | 114 t/s TG, 858 t/s PP (cold) |
 
-With Ornith resident the box sits at **43.5 GiB GTT with ~71 GiB of host RAM
+With Qwen3.6 resident the box sits at **43.5 GiB GTT with ~71 GiB of host RAM
 free**. With DS4 resident that free figure drops to **under 10 GiB**, which is
 the band this stack has been OOM-killed in twice — DS4 is genuinely a
-you-asked-for-it mode, not a default. Ornith's published throughput (53.2 t/s
-on this hardware class) comes from third-party benchmarks, not from this
-repo's harness, so it is deliberately left out of the table above.
+you-asked-for-it mode, not a default. Qwen3.6's throughput comes from local
+harness measurements on this box, not third-party benchmarks.
 
 **Why not one big model for everything?** A model resident 24/7 that is also
 strong enough for hard reasoning wants essentially all of memory, leaving no
@@ -159,9 +158,9 @@ prefill.
   has this bug. If you wire up Prometheus/VictoriaMetrics scraping, don't point
   it at per-model endpoints for a model you expect to idle-evict.
 - **A model id containing a dot will corrupt YAML config written by a
-  dotted-path setter.** Adding `ornith-1.0-35b` to a downstream client's config
-  produced `ornith-1: {0-35b: {context_length: ...}}` — the id was split on the
-  `.` in "1.0". It is *valid YAML*, so nothing errors and no log line appears;
+  dotted-path setter.** Adding `qwen3.6-35b` to a downstream client's config
+  produced `qwen3: {6-35b: {context_length: ...}}` — the id was split on the
+  `.` in "3.6". It is *valid YAML*, so nothing errors and no log line appears;
   the model simply has no configured context window. After editing any config
   by tooling, re-read it and eyeball the keys.
 - **A wedged GPU can pass every liveness check.** `VK_ERROR_DEVICE_LOST` on

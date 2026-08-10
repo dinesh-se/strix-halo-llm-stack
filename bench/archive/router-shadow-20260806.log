@@ -1,0 +1,420 @@
+0.00.030.113 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.032.725 I srv   load_models: Loaded 0 cached model presets
+0.00.033.540 I srv   load_models: Loaded 2 custom model presets from /models.ini
+0.00.034.410 I srv    operator(): Available models (2) (*: custom preset)
+0.00.034.412 I srv    operator():   * deepseek-v4-flash
+0.00.034.412 I srv    operator():   * gemma4-e4b
+0.00.034.415 I srv   load_models: (startup) loading model gemma4-e4b
+0.00.034.466 I srv          load: spawning server instance with name=gemma4-e4b on port 47995
+0.00.034.476 I srv          load: spawning server instance with args:
+0.00.034.477 I srv          load:   /usr/bin/llama-server
+0.00.034.478 I srv          load:   --host
+0.00.034.478 I srv          load:   127.0.0.1
+0.00.034.478 I srv          load:   --jinja
+0.00.034.478 I srv          load:   --metrics
+0.00.034.478 I srv          load:   --no-mmproj-auto
+0.00.034.480 I srv          load:   --port
+0.00.034.480 I srv          load:   47995
+0.00.034.481 I srv          load:   --reasoning-budget
+0.00.034.481 I srv          load:   8192
+0.00.034.481 I srv          load:   --reasoning-budget-message
+0.00.034.481 I srv          load:   Thinking budget exhausted. Stop reasoning and produce the final response now.
+0.00.034.481 I srv          load:   --sleep-idle-seconds
+0.00.034.482 I srv          load:   120
+0.00.034.482 I srv          load:   --model-draft
+0.00.034.483 I srv          load:   /models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/mtp-gemma-4-E4B-it-Q8_0.gguf
+0.00.034.484 I srv          load:   --spec-draft-n-max
+0.00.034.484 I srv          load:   4
+0.00.034.484 I srv          load:   --spec-type
+0.00.034.485 I srv          load:   draft-mtp
+0.00.034.485 I srv          load:   --temperature
+0.00.034.485 I srv          load:   1.0
+0.00.034.486 I srv          load:   --top-k
+0.00.034.486 I srv          load:   64
+0.00.034.486 I srv          load:   --top-p
+0.00.034.486 I srv          load:   0.95
+0.00.034.486 I srv          load:   --no-webui
+0.00.034.487 I srv          load:   --alias
+0.00.034.487 I srv          load:   gemma4-e4b
+0.00.034.487 I srv          load:   --batch-size
+0.00.034.487 I srv          load:   2048
+0.00.034.488 I srv          load:   --ctx-size
+0.00.034.488 I srv          load:   65536
+0.00.034.488 I srv          load:   --cache-ram
+0.00.034.488 I srv          load:   0
+0.00.034.489 I srv          load:   --cache-type-k
+0.00.034.489 I srv          load:   q8_0
+0.00.034.489 I srv          load:   --cache-type-v
+0.00.034.489 I srv          load:   q8_0
+0.00.034.490 I srv          load:   --flash-attn
+0.00.034.490 I srv          load:   on
+0.00.034.490 I srv          load:   --kv-unified
+0.00.034.490 I srv          load:   --model
+0.00.034.490 I srv          load:   /models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf
+0.00.034.491 I srv          load:   --n-gpu-layers
+0.00.034.491 I srv          load:   999
+0.00.034.491 I srv          load:   --parallel
+0.00.034.491 I srv          load:   4
+0.00.034.491 I srv          load:   --slot-prompt-similarity
+0.00.034.492 I srv          load:   0.5
+0.00.034.492 I srv          load:   --ubatch-size
+0.00.034.492 I srv          load:   2048
+0.00.034.746 W srv  llama_server: -----------------
+0.00.034.748 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.034.748 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.034.748 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.034.748 W srv  llama_server: -----------------
+0.00.034.759 W srv  llama_server: -----------------
+0.00.034.760 W srv  llama_server: the following feature(s) are enabled:
+0.00.034.760 W srv  llama_server:     router mode
+0.00.034.760 W srv  llama_server: do not expose the server to untrusted environments
+0.00.034.761 W srv  llama_server: -----------------
+0.00.034.761 I srv  llama_server: starting server in router mode. models will be automatically loaded on-demand
+0.00.035.881 I srv  llama_server: listening on http://0.0.0.0:9393
+[47995] 0.00.022.004 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+[47995] 0.00.022.164 I srv          init: The UI is disabled
+[47995] 0.00.022.166 I srv          init: Use --ui/--no-ui (or deprecated --webui/--no-webui) to enable/disable
+[47995] 0.00.022.249 W srv  llama_server: -----------------
+[47995] 0.00.022.250 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+[47995] 0.00.022.250 W srv  llama_server: this can be a security risk (cross-origin attacks)
+[47995] 0.00.022.250 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+[47995] 0.00.022.251 W srv  llama_server: -----------------
+[47995] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.0}}
+[47995] 0.00.023.518 I srv    load_model: loading model '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf'
+[47995] 0.00.023.592 E gguf_init_from_file: failed to open GGUF file '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/mtp-gemma-4-E4B-it-Q8_0.gguf' (No such file or directory)
+[47995] 0.00.023.697 E llama_model_load: error loading model: llama_model_loader: failed to load model from /models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/mtp-gemma-4-E4B-it-Q8_0.gguf
+[47995] 0.00.023.704 E llama_model_load_from_file_impl: failed to load model
+[47995] 0.00.023.744 W srv    load_model: [spec] failed to measure draft model memory: failed to load model
+[47995] 0.00.844.344 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+[47995] 0.00.844.684 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+[47995] 0.00.861.234 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+[47995] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.0}}
+[47995] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.8645651936531067}}
+[47995] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":1.0}}
+[47995] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":0.0}}
+[47995] 0.02.000.205 I common_speculative_init_result: loading draft model '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/mtp-gemma-4-E4B-it-Q8_0.gguf'
+[47995] 0.02.000.237 E gguf_init_from_file: failed to open GGUF file '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/mtp-gemma-4-E4B-it-Q8_0.gguf' (No such file or directory)
+[47995] 0.02.000.881 E llama_model_load: error loading model: llama_model_loader: failed to load model from /models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/mtp-gemma-4-E4B-it-Q8_0.gguf
+[47995] 0.02.000.886 E llama_model_load_from_file_impl: failed to load model
+[47995] 0.02.000.887 E common_speculative_init_result: failed to load draft model, '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/mtp-gemma-4-E4B-it-Q8_0.gguf'
+[47995] 0.02.000.893 E srv    load_model: failed to load draft model, '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/mtp-gemma-4-E4B-it-Q8_0.gguf'
+[47995] 0.02.000.898 I srv    operator(): operator(): cleaning up before exit...
+[47995] 0.02.001.935 E srv  llama_server: exiting due to model loading error
+0.02.192.473 I srv    operator(): instance name=gemma4-e4b exited with status 1
+2.05.915.796 I srv    operator(): operator(): cleaning up before exit...
+0.00.094.503 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.095.598 I srv   load_models: Loaded 0 cached model presets
+0.00.096.306 I srv   load_models: Loaded 2 custom model presets from /models.ini
+0.00.096.413 I srv    operator(): Available models (2) (*: custom preset)
+0.00.096.415 I srv    operator():   * deepseek-v4-flash
+0.00.096.415 I srv    operator():   * gemma4-e4b
+0.00.096.421 I srv   load_models: (startup) loading model gemma4-e4b
+0.00.096.467 I srv          load: spawning server instance with name=gemma4-e4b on port 48067
+0.00.096.477 I srv          load: spawning server instance with args:
+0.00.096.478 I srv          load:   /usr/bin/llama-server
+0.00.096.478 I srv          load:   --host
+0.00.096.478 I srv          load:   127.0.0.1
+0.00.096.479 I srv          load:   --jinja
+0.00.096.479 I srv          load:   --metrics
+0.00.096.479 I srv          load:   --no-mmproj-auto
+0.00.096.479 I srv          load:   --port
+0.00.096.479 I srv          load:   48067
+0.00.096.479 I srv          load:   --reasoning-budget
+0.00.096.479 I srv          load:   8192
+0.00.096.480 I srv          load:   --reasoning-budget-message
+0.00.096.480 I srv          load:   Thinking budget exhausted. Stop reasoning and produce the final response now.
+0.00.096.481 I srv          load:   --sleep-idle-seconds
+0.00.096.481 I srv          load:   120
+0.00.096.481 I srv          load:   --model-draft
+0.00.096.481 I srv          load:   /models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/MTP/mtp-gemma-4-E4B-it-Q8_0.gguf
+0.00.096.481 I srv          load:   --spec-draft-n-max
+0.00.096.482 I srv          load:   4
+0.00.096.482 I srv          load:   --spec-type
+0.00.096.482 I srv          load:   draft-mtp
+0.00.096.482 I srv          load:   --temperature
+0.00.096.483 I srv          load:   1.0
+0.00.096.483 I srv          load:   --top-k
+0.00.096.483 I srv          load:   64
+0.00.096.484 I srv          load:   --top-p
+0.00.096.484 I srv          load:   0.95
+0.00.096.484 I srv          load:   --no-webui
+0.00.096.484 I srv          load:   --alias
+0.00.096.484 I srv          load:   gemma4-e4b
+0.00.096.484 I srv          load:   --batch-size
+0.00.096.485 I srv          load:   2048
+0.00.096.485 I srv          load:   --ctx-size
+0.00.096.485 I srv          load:   65536
+0.00.096.485 I srv          load:   --cache-ram
+0.00.096.486 I srv          load:   0
+0.00.096.486 I srv          load:   --cache-type-k
+0.00.096.486 I srv          load:   q8_0
+0.00.096.486 I srv          load:   --cache-type-v
+0.00.096.486 I srv          load:   q8_0
+0.00.096.486 I srv          load:   --flash-attn
+0.00.096.487 I srv          load:   on
+0.00.096.487 I srv          load:   --kv-unified
+0.00.096.487 I srv          load:   --model
+0.00.096.487 I srv          load:   /models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf
+0.00.096.487 I srv          load:   --n-gpu-layers
+0.00.096.488 I srv          load:   999
+0.00.096.488 I srv          load:   --parallel
+0.00.096.488 I srv          load:   4
+0.00.096.488 I srv          load:   --slot-prompt-similarity
+0.00.096.488 I srv          load:   0.5
+0.00.096.488 I srv          load:   --ubatch-size
+0.00.096.489 I srv          load:   2048
+0.00.096.772 W srv  llama_server: -----------------
+0.00.096.773 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.096.773 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.096.774 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.096.774 W srv  llama_server: -----------------
+0.00.096.784 W srv  llama_server: -----------------
+0.00.096.785 W srv  llama_server: the following feature(s) are enabled:
+0.00.096.785 W srv  llama_server:     router mode
+0.00.096.785 W srv  llama_server: do not expose the server to untrusted environments
+0.00.096.785 W srv  llama_server: -----------------
+0.00.096.787 I srv  llama_server: starting server in router mode. models will be automatically loaded on-demand
+0.00.097.906 I srv  llama_server: listening on http://0.0.0.0:9393
+[48067] 0.00.023.173 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+[48067] 0.00.023.336 I srv          init: The UI is disabled
+[48067] 0.00.023.338 I srv          init: Use --ui/--no-ui (or deprecated --webui/--no-webui) to enable/disable
+[48067] 0.00.023.432 W srv  llama_server: -----------------
+[48067] 0.00.023.433 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+[48067] 0.00.023.433 W srv  llama_server: this can be a security risk (cross-origin attacks)
+[48067] 0.00.023.433 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+[48067] 0.00.023.433 W srv  llama_server: -----------------
+[48067] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.0}}
+[48067] 0.00.024.701 I srv    load_model: loading model '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf'
+[48067] 0.00.480.057 E llama_init_from_model: failed to initialize the context: Gemma4Assistant requires ctx_other to be set (this warning is normal during memory fitting)
+[48067] 0.00.550.480 W srv    load_model: [spec] failed to measure draft model memory: failed to create llama_context from model
+[48067] 0.01.252.893 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+[48067] 0.01.253.233 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+[48067] 0.01.271.935 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+[48067] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.0}}
+[48067] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.8605316877365112}}
+[48067] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":1.0}}
+[48067] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":0.0}}
+[48067] 0.01.950.794 I common_speculative_init_result: loading draft model '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/MTP/mtp-gemma-4-E4B-it-Q8_0.gguf'
+[48067] 0.02.250.097 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+[48067] 0.02.250.387 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+[48067] 0.02.264.457 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+[48067] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":0.0}}
+[48067] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":1.0}}
+[48067] 0.02.297.709 W llama_kv_cache: layer   3: sharing with layer 41. k = 0x19801000, v = 0x1dc01000
+[48067] 0.02.297.814 W llama_kv_cache: layer   0: sharing with layer 40. k = 0x50c1000, v = 0x52e1000
+[48067] 0.02.297.816 W llama_kv_cache: layer   1: sharing with layer 40. k = 0x50c1000, v = 0x52e1000
+[48067] 0.02.297.819 W llama_kv_cache: layer   2: sharing with layer 40. k = 0x50c1000, v = 0x52e1000
+[48067] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":1.0}}
+[48067] 0.02.384.228 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 65536, kv_unified = 'true'
+[48067] 0.02.476.532 W srv          init: --cache-idle-slots requires --cache-ram, disabling
+[48067] 0.02.484.264 I srv  llama_server: model loaded
+[48067] 0.02.484.270 I srv  llama_server: listening on http://127.0.0.1:48067
+[48067] cmd_child_to_router:state:{"state":"ready","payload":{"id":"gemma4-e4b","aliases":["gemma4-e4b"],"tags":[],"object":"model","created":1786037726,"owned_by":"llamacpp","meta":{"vocab_type":2,"n_vocab":262144,"n_ctx":65536,"n_ctx_train":131072,"n_embd":2560,"n_params":7463013674,"size":4199871656,"ftype":"Q4_0"}}}
+0.35.103.826 I srv  proxy_reques: proxying request to model gemma4-e4b on port 48067
+1.03.941.627 I srv        unload: stopping model instance name=gemma4-e4b
+1.03.941.652 I srv    operator(): stopping model instance name=gemma4-e4b
+[48067] 1.03.840.529 I srv    operator(): exit command received, exiting...
+[48067] 1.03.840.568 I srv    operator(): operator(): cleaning up before exit...
+1.04.179.654 I srv    operator(): instance name=gemma4-e4b exited with status 0
+1.07.943.555 I srv          load: spawning server instance with name=gemma4-e4b on port 45553
+1.07.943.587 I srv          load: spawning server instance with args:
+1.07.943.589 I srv          load:   /usr/bin/llama-server
+1.07.943.590 I srv          load:   --host
+1.07.943.590 I srv          load:   127.0.0.1
+1.07.943.591 I srv          load:   --jinja
+1.07.943.591 I srv          load:   --metrics
+1.07.943.591 I srv          load:   --no-mmproj-auto
+1.07.943.591 I srv          load:   --port
+1.07.943.591 I srv          load:   45553
+1.07.943.592 I srv          load:   --reasoning-budget
+1.07.943.594 I srv          load:   8192
+1.07.943.594 I srv          load:   --reasoning-budget-message
+1.07.943.594 I srv          load:   Thinking budget exhausted. Stop reasoning and produce the final response now.
+1.07.943.595 I srv          load:   --sleep-idle-seconds
+1.07.943.595 I srv          load:   120
+1.07.943.595 I srv          load:   --model-draft
+1.07.943.595 I srv          load:   /models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/MTP/mtp-gemma-4-E4B-it-Q8_0.gguf
+1.07.943.596 I srv          load:   --spec-draft-n-max
+1.07.943.596 I srv          load:   4
+1.07.943.596 I srv          load:   --spec-type
+1.07.943.596 I srv          load:   draft-mtp
+1.07.943.596 I srv          load:   --temperature
+1.07.943.597 I srv          load:   1.0
+1.07.943.597 I srv          load:   --top-k
+1.07.943.597 I srv          load:   64
+1.07.943.597 I srv          load:   --top-p
+1.07.943.598 I srv          load:   0.95
+1.07.943.598 I srv          load:   --no-webui
+1.07.943.598 I srv          load:   --alias
+1.07.943.598 I srv          load:   gemma4-e4b
+1.07.943.598 I srv          load:   --batch-size
+1.07.943.599 I srv          load:   2048
+1.07.943.599 I srv          load:   --ctx-size
+1.07.943.599 I srv          load:   65536
+1.07.943.599 I srv          load:   --cache-ram
+1.07.943.599 I srv          load:   0
+1.07.943.600 I srv          load:   --cache-type-k
+1.07.943.600 I srv          load:   q8_0
+1.07.943.600 I srv          load:   --cache-type-v
+1.07.943.600 I srv          load:   q8_0
+1.07.943.600 I srv          load:   --flash-attn
+1.07.943.601 I srv          load:   on
+1.07.943.601 I srv          load:   --kv-unified
+1.07.943.601 I srv          load:   --model
+1.07.943.601 I srv          load:   /models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf
+1.07.943.601 I srv          load:   --n-gpu-layers
+1.07.943.602 I srv          load:   999
+1.07.943.602 I srv          load:   --parallel
+1.07.943.602 I srv          load:   4
+1.07.943.602 I srv          load:   --slot-prompt-similarity
+1.07.943.603 I srv          load:   0.5
+1.07.943.603 I srv          load:   --ubatch-size
+1.07.943.603 I srv          load:   2048
+[45553] 0.00.028.160 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+[45553] 0.00.028.363 I srv          init: The UI is disabled
+[45553] 0.00.028.364 I srv          init: Use --ui/--no-ui (or deprecated --webui/--no-webui) to enable/disable
+[45553] 0.00.028.471 W srv  llama_server: -----------------
+[45553] 0.00.028.472 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+[45553] 0.00.028.472 W srv  llama_server: this can be a security risk (cross-origin attacks)
+[45553] 0.00.028.472 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+[45553] 0.00.028.472 W srv  llama_server: -----------------
+[45553] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.0}}
+[45553] 0.00.029.762 I srv    load_model: loading model '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf'
+[45553] 0.00.525.562 E llama_init_from_model: failed to initialize the context: Gemma4Assistant requires ctx_other to be set (this warning is normal during memory fitting)
+[45553] 0.00.587.277 W srv    load_model: [spec] failed to measure draft model memory: failed to create llama_context from model
+[45553] 0.01.252.191 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+[45553] 0.01.252.679 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+[45553] 0.01.276.973 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+[45553] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.0}}
+[45553] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.8971291184425354}}
+[45553] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":1.0}}
+[45553] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":0.0}}
+[45553] 0.01.939.421 I common_speculative_init_result: loading draft model '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/MTP/mtp-gemma-4-E4B-it-Q8_0.gguf'
+[45553] 0.02.244.403 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+[45553] 0.02.244.731 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+[45553] 0.02.262.918 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+[45553] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":0.0}}
+[45553] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":1.0}}
+[45553] 0.02.293.655 W llama_kv_cache: layer   3: sharing with layer 41. k = 0x19801000, v = 0x1dc01000
+[45553] 0.02.293.756 W llama_kv_cache: layer   0: sharing with layer 40. k = 0x50c1000, v = 0x52e1000
+[45553] 0.02.293.758 W llama_kv_cache: layer   1: sharing with layer 40. k = 0x50c1000, v = 0x52e1000
+[45553] 0.02.293.760 W llama_kv_cache: layer   2: sharing with layer 40. k = 0x50c1000, v = 0x52e1000
+[45553] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":1.0}}
+[45553] 0.02.378.220 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 65536, kv_unified = 'true'
+[45553] 0.02.418.156 W srv          init: --cache-idle-slots requires --cache-ram, disabling
+[45553] 0.02.424.458 I srv  llama_server: model loaded
+[45553] 0.02.424.468 I srv  llama_server: listening on http://127.0.0.1:45553
+[45553] 0.02.424.585 I srv    operator(): child server monitoring thread started, waiting for EOF on stdin...
+[45553] cmd_child_to_router:state:{"state":"ready","payload":{"id":"gemma4-e4b","aliases":["gemma4-e4b"],"tags":[],"object":"model","created":1786037794,"owned_by":"llamacpp","meta":{"vocab_type":2,"n_vocab":262144,"n_ctx":65536,"n_ctx_train":131072,"n_embd":2560,"n_params":7463013674,"size":4199871656,"ftype":"Q4_0"}}}
+1.10.949.465 W srv    operator(): got exception: {"error":{"code":500,"message":"[json.exception.parse_error.101] parse error at line 1, column 1: attempting to parse an empty input; check that your input string or stream contains the expected JSON","type":"server_error"}}
+1.20.990.439 I srv  proxy_reques: proxying request to model gemma4-e4b on port 45553
+[45553] 0.13.044.770 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+[45553] 0.13.044.877 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+[45553] 0.13.235.600 I slot print_timing: id  3 | task 0 | prompt eval time =     139.37 ms /    10 tokens (   13.94 ms per token,    71.75 tokens per second)
+[45553] 0.13.235.605 I slot print_timing: id  3 | task 0 |        eval time =      51.28 ms /     8 tokens (    6.41 ms per token,   156.00 tokens per second)
+[45553] 0.13.235.606 I slot print_timing: id  3 | task 0 |       total time =     190.65 ms /    18 tokens
+[45553] 0.13.235.611 I slot print_timing: id  3 | task 0 |    graphs reused =          1
+[45553] 0.13.235.615 I slot print_timing: id  3 | task 0 | draft acceptance = 1.00000 (    5 accepted /     5 generated), mean len =  3.50
+[45553] 0.13.235.687 I slot      release: id  3 | task 0 | stop processing: n_tokens = 17, truncated = 0
+1.37.894.303 I srv    operator(): instance name=gemma4-e4b exited with status 1
+1.45.889.558 I srv  ensure_model: model name=gemma4-e4b is not loaded, loading...
+1.45.889.598 I srv          load: spawning server instance with name=gemma4-e4b on port 38711
+1.45.889.615 I srv          load: spawning server instance with args:
+1.45.889.616 I srv          load:   /usr/bin/llama-server
+1.45.889.617 I srv          load:   --host
+1.45.889.617 I srv          load:   127.0.0.1
+1.45.889.618 I srv          load:   --jinja
+1.45.889.618 I srv          load:   --metrics
+1.45.889.618 I srv          load:   --no-mmproj-auto
+1.45.889.619 I srv          load:   --port
+1.45.889.619 I srv          load:   38711
+1.45.889.619 I srv          load:   --reasoning-budget
+1.45.889.619 I srv          load:   8192
+1.45.889.619 I srv          load:   --reasoning-budget-message
+1.45.889.619 I srv          load:   Thinking budget exhausted. Stop reasoning and produce the final response now.
+1.45.889.619 I srv          load:   --sleep-idle-seconds
+1.45.889.620 I srv          load:   120
+1.45.889.620 I srv          load:   --model-draft
+1.45.889.620 I srv          load:   /models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/MTP/mtp-gemma-4-E4B-it-Q8_0.gguf
+1.45.889.620 I srv          load:   --spec-draft-n-max
+1.45.889.621 I srv          load:   4
+1.45.889.621 I srv          load:   --spec-type
+1.45.889.621 I srv          load:   draft-mtp
+1.45.889.621 I srv          load:   --temperature
+1.45.889.621 I srv          load:   1.0
+1.45.889.622 I srv          load:   --top-k
+1.45.889.622 I srv          load:   64
+1.45.889.622 I srv          load:   --top-p
+1.45.889.622 I srv          load:   0.95
+1.45.889.622 I srv          load:   --no-webui
+1.45.889.623 I srv          load:   --alias
+1.45.889.623 I srv          load:   gemma4-e4b
+1.45.889.623 I srv          load:   --batch-size
+1.45.889.623 I srv          load:   2048
+1.45.889.623 I srv          load:   --ctx-size
+1.45.889.624 I srv          load:   65536
+1.45.889.624 I srv          load:   --cache-ram
+1.45.889.624 I srv          load:   0
+1.45.889.624 I srv          load:   --cache-type-k
+1.45.889.624 I srv          load:   q8_0
+1.45.889.624 I srv          load:   --cache-type-v
+1.45.889.624 I srv          load:   q8_0
+1.45.889.625 I srv          load:   --flash-attn
+1.45.889.625 I srv          load:   on
+1.45.889.625 I srv          load:   --kv-unified
+1.45.889.625 I srv          load:   --model
+1.45.889.626 I srv          load:   /models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf
+1.45.889.626 I srv          load:   --n-gpu-layers
+1.45.889.626 I srv          load:   999
+1.45.889.626 I srv          load:   --parallel
+1.45.889.626 I srv          load:   4
+1.45.889.626 I srv          load:   --slot-prompt-similarity
+1.45.889.627 I srv          load:   0.5
+1.45.889.627 I srv          load:   --ubatch-size
+1.45.889.627 I srv          load:   2048
+1.45.889.808 I srv  ensure_model: waiting until model name=gemma4-e4b is fully loaded...
+[38711] 0.00.028.682 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+[38711] 0.00.028.872 I srv          init: The UI is disabled
+[38711] 0.00.028.873 I srv          init: Use --ui/--no-ui (or deprecated --webui/--no-webui) to enable/disable
+[38711] 0.00.028.977 W srv  llama_server: -----------------
+[38711] 0.00.028.978 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+[38711] 0.00.028.978 W srv  llama_server: this can be a security risk (cross-origin attacks)
+[38711] 0.00.028.978 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+[38711] 0.00.028.978 W srv  llama_server: -----------------
+[38711] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.0}}
+[38711] 0.00.030.261 I srv    load_model: loading model '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf'
+[38711] 0.00.459.087 E llama_init_from_model: failed to initialize the context: Gemma4Assistant requires ctx_other to be set (this warning is normal during memory fitting)
+[38711] 0.00.518.771 W srv    load_model: [spec] failed to measure draft model memory: failed to create llama_context from model
+[38711] 0.01.174.994 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+[38711] 0.01.175.328 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+[38711] 0.01.191.749 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+[38711] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.0}}
+[38711] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.8939077258110046}}
+[38711] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":1.0}}
+[38711] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":0.0}}
+[38711] 0.01.823.205 I common_speculative_init_result: loading draft model '/models/aux/snapshots/8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/MTP/mtp-gemma-4-E4B-it-Q8_0.gguf'
+[38711] 0.02.132.247 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+[38711] 0.02.132.602 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+[38711] 0.02.151.143 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+[38711] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":0.0}}
+[38711] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":1.0}}
+[38711] 0.02.182.202 W llama_kv_cache: layer   3: sharing with layer 41. k = 0x19801000, v = 0x1dc01000
+[38711] 0.02.182.285 W llama_kv_cache: layer   0: sharing with layer 40. k = 0x50c1000, v = 0x52e1000
+[38711] 0.02.182.287 W llama_kv_cache: layer   1: sharing with layer 40. k = 0x50c1000, v = 0x52e1000
+[38711] 0.02.182.291 W llama_kv_cache: layer   2: sharing with layer 40. k = 0x50c1000, v = 0x52e1000
+[38711] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":1.0}}
+[38711] 0.02.268.157 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 65536, kv_unified = 'true'
+[38711] 0.02.311.621 W srv          init: --cache-idle-slots requires --cache-ram, disabling
+[38711] 0.02.317.051 I srv  llama_server: model loaded
+[38711] 0.02.317.061 I srv  llama_server: listening on http://127.0.0.1:38711
+[38711] 0.02.317.165 I srv    operator(): child server monitoring thread started, waiting for EOF on stdin...
+[38711] cmd_child_to_router:state:{"state":"ready","payload":{"id":"gemma4-e4b","aliases":["gemma4-e4b"],"tags":[],"object":"model","created":1786037832,"owned_by":"llamacpp","meta":{"vocab_type":2,"n_vocab":262144,"n_ctx":65536,"n_ctx_train":131072,"n_embd":2560,"n_params":7463013674,"size":4199871656,"ftype":"Q4_0"}}}
+1.48.212.872 I srv  proxy_reques: proxying request to model gemma4-e4b on port 38711
+[38711] 0.02.319.321 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+[38711] 0.02.319.398 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+[38711] 0.02.455.614 I slot print_timing: id  3 | task 0 | prompt eval time =      86.51 ms /    11 tokens (    7.86 ms per token,   127.15 tokens per second)
+[38711] 0.02.455.618 I slot print_timing: id  3 | task 0 |        eval time =      49.65 ms /     3 tokens (   16.55 ms per token,    60.43 tokens per second)
+[38711] 0.02.455.619 I slot print_timing: id  3 | task 0 |       total time =     136.16 ms /    14 tokens
+[38711] 0.02.455.624 I slot print_timing: id  3 | task 0 |    graphs reused =          2
+[38711] 0.02.455.628 I slot print_timing: id  3 | task 0 | draft acceptance = 0.37500 (    3 accepted /     8 generated), mean len =  2.50
+[38711] 0.02.455.695 I slot      release: id  3 | task 0 | stop processing: n_tokens = 16, truncated = 0

@@ -14,7 +14,7 @@
 # NOTE: no After=/Requires=docker.service. This is a USER unit and cannot
 # reference system units — systemd fails the start with "Unit docker.service
 # not found". The docker CLI simply fails and Restart=on-failure retries.
-Description=llama.cpp router server (ornith-1.0-35b + gemma4-e4b; ds4 on-demand)
+Description=llama.cpp router server (qwen3.6-35b + gemma4-e4b; ds4 on-demand)
 
 # A crash loop is expensive here in a way it never was for llama-swap: DS4's
 # load-on-startup costs 3–11 minutes per iteration. Let it give up rather than
@@ -53,7 +53,7 @@ ExecStartPre=-/usr/bin/docker rm -f llama-router
 # --models-max/--models-autoload exist), and --models-max caps model COUNT not
 # SIZE. With the whole hf-cache mounted the router enumerates every GGUF —
 # gpt-oss-120b, Qwen3.5-122B (73 GiB), stale 27b/35b quants — and one stray
-# model id would load 73 GiB on top of DS4. Only the two needed repos are
+# model id would load 73 GiB on top of DS4. Only the three needed repos are
 # mounted, and LLAMA_CACHE points at an empty dir so discovery finds nothing.
 # Mount the REPO root, not the snapshot dir: the .gguf files are symlinks into
 # ../../blobs/ (aux) and ../../../blobs/ (ds4), which only resolve if blobs/ is
@@ -67,7 +67,7 @@ ExecStart=/usr/bin/docker run --rm --name llama-router \
   -e LLAMA_CACHE=/models/empty \
   -v /home/YOUR_USER/llama-stack/hf-cache/models--unsloth--DeepSeek-V4-Flash-0731-GGUF:/models/ds4:ro \
   -v /home/YOUR_USER/llama-stack/hf-cache/hub/models--unsloth--gemma-4-E4B-it-qat-GGUF:/models/aux:ro \
-  -v /home/YOUR_USER/llama-stack/hf-cache/ornith-dl:/models/ornith:ro \
+  -v /home/YOUR_USER/llama-stack/hf-cache-archive/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF:/models/qwen:ro \
   -v /home/YOUR_USER/llama-stack/empty-cache:/models/empty:rw \
   -v /home/YOUR_USER/llama-stack/config/models.ini:/models.ini:ro \
   --entrypoint /usr/bin/llama-server \

@@ -1,0 +1,18 @@
+[
+  {
+    "arm": "radv",
+    "image": "kyuz0/amd-strix-halo-toolboxes:vulkan-radv-performance",
+    "returncode": 0,
+    "elapsed_s": 98.1,
+    "peak_gtt_gib": 97.5,
+    "min_ram_avail_gib": 20.3,
+    "guard_tripped": null,
+    "pp": 205.15,
+    "pp_sd": 2.47,
+    "tg": 19.32,
+    "tg_sd": 0.05,
+    "build": 10283,
+    "gpu": "AMD Radeon 8060S Graphics (RADV STRIX_HALO)",
+    "error": null
+  }
+]

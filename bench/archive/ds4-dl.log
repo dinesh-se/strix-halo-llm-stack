@@ -1,0 +1,3 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Error: Invalid value. The file is too large to be downloaded using the regular download method.  Install `hf_xet` with `pip install hf_xet` for xet-powered downloads.
+Hint: set HF_DEBUG=1 as environment variable for full traceback.

@@ -1,0 +1,25 @@
+--- starting arm: A0-none
+    ready after 8s
+== A0-none [throughput] ==
+{
+  "tag": "A0-none",
+  "mode": "throughput",
+  "n": 24,
+  "depth": 6000,
+  "concurrency": 1,
+  "n_predict": 256,
+  "errors": 0,
+  "error_samples": [],
+  "discarded_short": 0,
+  "prompt_n_med": 5863.5,
+  "pp_med": 1207.403308102044,
+  "tg_med": 50.894877772999465,
+  "tg_min": 50.31000593304328,
+  "tg_max": 52.19166246347094,
+  "wall_s": 230.39808249473572,
+  "sustained_tok_s": 25.26930752617277,
+  "total_predicted": 5822,
+  "draft_acceptance": null,
+  "worst_repeat_ratio": 0.6428571428571428
+}
+== A0-none [throughput] ==

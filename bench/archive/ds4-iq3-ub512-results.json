@@ -1,0 +1,2 @@
+[{"arm":"radv","quant":"iq3","ubatch":512,"build":10283,"pp":205.62,"pp_sd":3.19,"tg":19.03,"tg_sd":0.22,
+  "model_size_gib":97.0,"peak_gtt_gib":97.0,"note":"wrapper killed by harness mid-run; container survived and was drained via `docker logs -f`. Numbers are the container's own llama-bench JSON."}]

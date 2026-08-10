@@ -1,0 +1,483 @@
+0.00.029.903 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.040.807 I srv   load_models: Loaded 9 cached model presets
+0.00.041.230 I srv   load_models: Loaded 2 custom model presets from /models.ini
+0.00.044.512 I srv    operator(): Available models (11) (*: custom preset)
+0.00.044.515 I srv    operator():   * deepseek-v4-flash
+0.00.044.515 I srv    operator():   * gemma4-12b
+0.00.044.515 I srv    operator():     ggml-org/gpt-oss-120b-GGUF:MXFP4
+0.00.044.516 I srv    operator():     ggml-org/gpt-oss-20b-GGUF:MXFP4
+0.00.044.516 I srv    operator():     unsloth/DeepSeek-V4-Flash-0731-GGUF:IQ2_XXS
+0.00.044.516 I srv    operator():     unsloth/Qwen3.5-122B-A10B-MTP-GGUF:Q4_K_XL
+0.00.044.517 I srv    operator():     unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS
+0.00.044.517 I srv    operator():     unsloth/Qwen3.6-27B-MTP-GGUF:Q6_K
+0.00.044.517 I srv    operator():     unsloth/Qwen3.6-35B-A3B-MTP-GGUF:Q4_K_M
+0.00.044.517 I srv    operator():     unsloth/Qwen3.6-35B-A3B-MTP-GGUF:Q8_0
+0.00.044.517 I srv    operator():     unsloth/gemma-4-12B-it-qat-GGUF:Q4_K_XL
+0.00.044.522 I srv   load_models: (startup) loading model deepseek-v4-flash
+0.00.044.560 I srv          load: spawning server instance with name=deepseek-v4-flash on port 44449
+0.00.044.568 I srv          load: spawning server instance with args:
+0.00.044.569 I srv          load:   /usr/bin/llama-server
+0.00.044.569 I srv          load:   --cache-reuse
+0.00.044.569 I srv          load:   256
+0.00.044.569 I srv          load:   --host
+0.00.044.569 I srv          load:   127.0.0.1
+0.00.044.570 I srv          load:   --jinja
+0.00.044.570 I srv          load:   --metrics
+0.00.044.571 I srv          load:   --port
+0.00.044.571 I srv          load:   44449
+0.00.044.571 I srv          load:   --no-webui
+0.00.044.571 I srv          load:   --alias
+0.00.044.572 I srv          load:   deepseek-v4-flash
+0.00.044.572 I srv          load:   --batch-size
+0.00.044.572 I srv          load:   2048
+0.00.044.572 I srv          load:   --ctx-size
+0.00.044.572 I srv          load:   131072
+0.00.044.572 I srv          load:   --cache-ram
+0.00.044.573 I srv          load:   0
+0.00.044.573 I srv          load:   --cache-type-k
+0.00.044.573 I srv          load:   q8_0
+0.00.044.573 I srv          load:   --cache-type-v
+0.00.044.573 I srv          load:   q8_0
+0.00.044.574 I srv          load:   --flash-attn
+0.00.044.574 I srv          load:   on
+0.00.044.574 I srv          load:   --model
+0.00.044.574 I srv          load:   /root/.cache/huggingface/models--unsloth--DeepSeek-V4-Flash-0731-GGUF/snapshots/1290dcca3f84612f646fb546fb9e8433c1b339b0/UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf
+0.00.044.575 I srv          load:   --n-gpu-layers
+0.00.044.575 I srv          load:   999
+0.00.044.575 I srv          load:   --parallel
+0.00.044.575 I srv          load:   1
+0.00.044.575 I srv          load:   --ubatch-size
+0.00.044.576 I srv          load:   1024
+0.00.044.985 W srv  llama_server: -----------------
+0.00.044.986 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.044.986 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.044.986 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.044.986 W srv  llama_server: -----------------
+0.00.044.997 W srv  llama_server: -----------------
+0.00.044.997 W srv  llama_server: the following feature(s) are enabled:
+0.00.044.998 W srv  llama_server:     router mode
+0.00.044.998 W srv  llama_server: do not expose the server to untrusted environments
+0.00.044.998 W srv  llama_server: -----------------
+0.00.044.999 I srv  llama_server: starting server in router mode. models will be automatically loaded on-demand
+0.00.046.262 I srv  llama_server: listening on http://0.0.0.0:10098
+[44449] 0.00.024.353 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+[44449] 0.00.024.522 I srv          init: The UI is disabled
+[44449] 0.00.024.523 I srv          init: Use --ui/--no-ui (or deprecated --webui/--no-webui) to enable/disable
+[44449] 0.00.024.615 W srv  llama_server: -----------------
+[44449] 0.00.024.616 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+[44449] 0.00.024.616 W srv  llama_server: this can be a security risk (cross-origin attacks)
+[44449] 0.00.024.617 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+[44449] 0.00.024.617 W srv  llama_server: -----------------
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.0}}
+[44449] 0.00.025.924 I srv    load_model: loading model '/root/.cache/huggingface/models--unsloth--DeepSeek-V4-Flash-0731-GGUF/snapshots/1290dcca3f84612f646fb546fb9e8433c1b339b0/UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf'
+0.26.793.801 I srv  ensure_model: waiting until model name=deepseek-v4-flash is fully loaded...
+0.46.803.022 I srv  ensure_model: waiting until model name=deepseek-v4-flash is fully loaded...
+1.06.814.155 I srv  ensure_model: waiting until model name=deepseek-v4-flash is fully loaded...
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.0}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.00833740085363388}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.015458417125046253}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.023347705602645874}}
+1.26.876.458 I srv  ensure_model: waiting until model name=deepseek-v4-flash is fully loaded...
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.029304923489689827}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.029878390952944756}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.03855360671877861}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.046442896127700806}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.054332185536623}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.061851534992456436}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.06974082440137863}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.07569804042577744}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.08303018659353256}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.09091947227716446}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.09687669575214386}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.10629834979772568}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.11418763548135757}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.12207692116498947}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.1313411444425583}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.13923044502735138}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.14711973071098328}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.1546093076467514}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.1624985933303833}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.1684558093547821}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.17578795552253723}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.18367725610733032}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.18963447213172913}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.19905611872673035}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.20694540441036224}}
+1.46.923.149 I srv  ensure_model: waiting until model name=deepseek-v4-flash is fully loaded...
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.21483470499515533}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.22409892082214355}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.23198820650577545}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.23987750709056854}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.24736708402633667}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.25525638461112976}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.26121360063552856}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.2685457468032837}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.2764350473880768}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.2823922634124756}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.2898818254470825}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.2977711260318756}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.3037283420562744}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.31106048822402954}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.31894975900650024}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.32490697503089905}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.33239656686782837}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.34028586745262146}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.34624308347702026}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.353575199842453}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.3614645004272461}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.3674217164516449}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.3749113082885742}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.3828006088733673}}
+2.06.979.210 I srv  ensure_model: waiting until model name=deepseek-v4-flash is fully loaded...
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.3887578248977661}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.39608997106552124}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.40397924184799194}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.40993645787239075}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.41742607951164246}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.42531535029411316}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.43127256631851196}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.4386047124862671}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.4464940130710602}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.452451229095459}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.4618729054927826}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.4697621762752533}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.4776514768600464}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.47893059253692627}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.4849835932254791}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.4928728938102722}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.498830109834671}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5063197016716003}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5142090320587158}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5201662182807922}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5274983644485474}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5353876352310181}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5413448810577393}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5507665276527405}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5586557984352112}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5665450692176819}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5738772749900818}}
+2.27.026.867 I srv  ensure_model: waiting until model name=deepseek-v4-flash is fully loaded...
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5817665457725525}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5877237319946289}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.5883069634437561}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.598121166229248}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.6090695858001709}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.6179249286651611}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.6272476315498352}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.6351369023323059}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.6430262327194214}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.6524478197097778}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.6603371500968933}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.6682264804840088}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.6774906516075134}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.6853799819946289}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.6932692527770996}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.702690839767456}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.7105801105499268}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.7184694409370422}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.7277337312698364}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.7356230020523071}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.7435122728347778}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.7444491982460022}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.7529338598251343}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.7608231902122498}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.7687124609947205}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.7779767513275146}}
+2.47.080.198 I srv  ensure_model: waiting until model name=deepseek-v4-flash is fully loaded...
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.7858660221099854}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.793755292892456}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8031769394874573}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.811066210269928}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8189554810523987}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8262876868247986}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8341770172119141}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8401342034339905}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8476237058639526}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8555130362510681}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8614702224731445}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8688023686408997}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8766916394233704}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8826488852500916}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.8901385068893433}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.898027777671814}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.9039849638938904}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.9113171100616455}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.919206440448761}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.9251636266708374}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.9345853328704834}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.9424746036529541}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.9503638744354248}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.9576960206031799}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.9655852913856506}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.9715425372123718}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.980964183807373}}
+3.07.108.886 I srv  ensure_model: waiting until model name=deepseek-v4-flash is fully loaded...
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.9919126033782959}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":0.9998018741607666}}
+[44449] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model"],"current":"text_model","value":1.0}}
+[44449] 3.09.768.994 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+[44449] 3.09.854.849 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 131072, kv_unified = 'false'
+[44449] 3.09.855.962 W srv          init: --cache-idle-slots requires --cache-ram, disabling
+[44449] 3.09.874.361 I srv  llama_server: model loaded
+[44449] 3.09.874.370 I srv  llama_server: listening on http://127.0.0.1:44449
+[44449] 3.09.874.477 I srv    operator(): child server monitoring thread started, waiting for EOF on stdin...
+[44449] cmd_child_to_router:state:{"state":"ready","payload":{"id":"deepseek-v4-flash","aliases":["deepseek-v4-flash"],"tags":[],"object":"model","created":1786033969,"owned_by":"llamacpp","meta":{"vocab_type":2,"n_vocab":129280,"n_ctx":131072,"n_ctx_train":1048576,"n_embd":4096,"n_params":284334567511,"size":104202502492,"ftype":"IQ3_XXS - 3.0625 bpw"}}}
+3.09.926.476 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+3.09.926.537 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+3.09.926.589 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+3.09.926.642 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+3.09.926.646 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+3.09.926.698 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+3.09.926.749 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+3.09.926.799 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+3.09.926.802 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+[44449] 3.09.887.776 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+[44449] 3.09.887.933 I slot launch_slot_: id  0 | task 6 | processing task, is_child = 0
+[44449] 3.10.326.849 I slot print_timing: id  0 | task 6 | prompt eval time =     438.74 ms /     5 tokens (   87.75 ms per token,    11.40 tokens per second)
+[44449] 3.10.326.854 I slot print_timing: id  0 | task 6 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)
+[44449] 3.10.326.855 I slot print_timing: id  0 | task 6 |       total time =     438.75 ms /     6 tokens
+[44449] 3.10.326.858 I slot print_timing: id  0 | task 6 |    graphs reused =          1
+[44449] 3.10.327.004 I slot      release: id  0 | task 6 | stop processing: n_tokens = 5, truncated = 0
+[44449] 3.10.327.022 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+[44449] 3.10.327.075 I slot launch_slot_: id  0 | task 7 | processing task, is_child = 0
+3.10.379.219 E srv    operator(): http client error: Connection handling canceled
+[44449] 3.10.475.160 I slot print_timing: id  0 | task 7 | prompt eval time =     147.93 ms /     4 tokens (   36.98 ms per token,    27.04 tokens per second)
+[44449] 3.10.475.165 I slot print_timing: id  0 | task 7 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)
+[44449] 3.10.475.165 I slot print_timing: id  0 | task 7 |       total time =     147.93 ms /     5 tokens
+[44449] 3.10.475.166 I slot print_timing: id  0 | task 7 |    graphs reused =          2
+[44449] 3.10.475.198 I slot      release: id  0 | task 7 | stop processing: n_tokens = 5, truncated = 0
+[44449] 3.10.475.214 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+[44449] 3.10.475.258 I slot launch_slot_: id  0 | task 4 | processing task, is_child = 0
+[44449] 3.10.623.999 I slot print_timing: id  0 | task 4 | prompt eval time =     148.64 ms /     4 tokens (   37.16 ms per token,    26.91 tokens per second)
+[44449] 3.10.624.004 I slot print_timing: id  0 | task 4 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)
+[44449] 3.10.624.005 I slot print_timing: id  0 | task 4 |       total time =     148.64 ms /     5 tokens
+[44449] 3.10.624.006 I slot print_timing: id  0 | task 4 |    graphs reused =          3
+[44449] 3.10.624.034 I slot      release: id  0 | task 4 | stop processing: n_tokens = 5, truncated = 0
+[44449] 3.10.624.053 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+[44449] 3.10.624.102 I slot launch_slot_: id  0 | task 3 | processing task, is_child = 0
+3.10.674.728 E srv    operator(): http client error: Connection handling canceled
+[44449] 3.10.769.316 I slot print_timing: id  0 | task 3 | prompt eval time =     145.19 ms /     4 tokens (   36.30 ms per token,    27.55 tokens per second)
+[44449] 3.10.769.321 I slot print_timing: id  0 | task 3 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)
+[44449] 3.10.769.322 I slot print_timing: id  0 | task 3 |       total time =     145.19 ms /     5 tokens
+[44449] 3.10.769.323 I slot print_timing: id  0 | task 3 |    graphs reused =          4
+[44449] 3.10.769.349 I slot      release: id  0 | task 3 | stop processing: n_tokens = 5, truncated = 0
+[44449] 3.10.769.367 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+[44449] 3.10.769.411 I slot launch_slot_: id  0 | task 2 | processing task, is_child = 0
+3.10.819.889 E srv    operator(): http client error: Connection handling canceled
+[44449] 3.10.915.452 I slot print_timing: id  0 | task 2 | prompt eval time =     145.99 ms /     4 tokens (   36.50 ms per token,    27.40 tokens per second)
+[44449] 3.10.915.535 I slot print_timing: id  0 | task 2 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)
+[44449] 3.10.915.537 I slot print_timing: id  0 | task 2 |       total time =     145.99 ms /     5 tokens
+[44449] 3.10.915.539 I slot print_timing: id  0 | task 2 |    graphs reused =          5
+[44449] 3.10.915.566 I slot      release: id  0 | task 2 | stop processing: n_tokens = 5, truncated = 0
+[44449] 3.10.915.584 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+[44449] 3.10.915.630 I slot launch_slot_: id  0 | task 1 | processing task, is_child = 0
+3.10.966.135 E srv    operator(): http client error: Connection handling canceled
+[44449] 3.11.062.654 I slot print_timing: id  0 | task 1 | prompt eval time =     146.99 ms /     4 tokens (   36.75 ms per token,    27.21 tokens per second)
+[44449] 3.11.062.659 I slot print_timing: id  0 | task 1 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)
+[44449] 3.11.062.660 I slot print_timing: id  0 | task 1 |       total time =     146.99 ms /     5 tokens
+[44449] 3.11.062.714 I slot print_timing: id  0 | task 1 |    graphs reused =          6
+[44449] 3.11.062.743 I slot      release: id  0 | task 1 | stop processing: n_tokens = 5, truncated = 0
+[44449] 3.11.062.763 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+[44449] 3.11.062.811 I slot launch_slot_: id  0 | task 5 | processing task, is_child = 0
+3.11.113.324 E srv    operator(): http client error: Connection handling canceled
+[44449] 3.11.211.485 I slot print_timing: id  0 | task 5 | prompt eval time =     148.64 ms /     4 tokens (   37.16 ms per token,    26.91 tokens per second)
+[44449] 3.11.211.491 I slot print_timing: id  0 | task 5 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)
+[44449] 3.11.211.501 I slot print_timing: id  0 | task 5 |       total time =     148.64 ms /     5 tokens
+[44449] 3.11.211.504 I slot print_timing: id  0 | task 5 |    graphs reused =          7
+[44449] 3.11.211.535 I slot      release: id  0 | task 5 | stop processing: n_tokens = 5, truncated = 0
+[44449] 3.11.211.559 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+[44449] 3.11.211.620 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+3.11.262.386 E srv    operator(): http client error: Connection handling canceled
+[44449] 3.11.366.449 I slot print_timing: id  0 | task 0 | prompt eval time =     154.79 ms /     4 tokens (   38.70 ms per token,    25.84 tokens per second)
+[44449] 3.11.366.456 I slot print_timing: id  0 | task 0 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)
+[44449] 3.11.366.457 I slot print_timing: id  0 | task 0 |       total time =     154.79 ms /     5 tokens
+[44449] 3.11.366.458 I slot print_timing: id  0 | task 0 |    graphs reused =          8
+[44449] 3.11.366.488 I slot      release: id  0 | task 0 | stop processing: n_tokens = 5, truncated = 0
+[44449] 3.11.366.513 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+[44449] 3.11.366.601 I slot launch_slot_: id  0 | task 8 | processing task, is_child = 0
+3.11.417.103 E srv    operator(): http client error: Connection handling canceled
+[44449] 3.11.519.332 I slot print_timing: id  0 | task 8 | prompt eval time =     152.69 ms /     4 tokens (   38.17 ms per token,    26.20 tokens per second)
+[44449] 3.11.519.337 I slot print_timing: id  0 | task 8 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)
+[44449] 3.11.519.338 I slot print_timing: id  0 | task 8 |       total time =     152.70 ms /     5 tokens
+[44449] 3.11.519.798 I slot print_timing: id  0 | task 8 |    graphs reused =          9
+[44449] 3.11.519.823 I slot      release: id  0 | task 8 | stop processing: n_tokens = 5, truncated = 0
+3.11.570.495 E srv    operator(): http client error: Connection handling canceled
+3.32.280.272 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+[44449] 3.32.268.076 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 17179459406
+[44449] 3.32.268.150 I slot launch_slot_: id  0 | task 19 | processing task, is_child = 0
+[44449] ggml_vulkan: MUL_MAT_ID f16-B path engaged (GGML_VK_MMID_F16B)
+[44449] 3.36.199.891 I slot print_timing: id  0 | task 19 | prompt processing, n_tokens =    916, progress = 1.00, t =   3.93 s / 232.98 tokens per second
+[44449] 3.41.683.437 I slot print_timing: id  0 | task 19 | n_decoded =    100, tg =  18.81 t/s, tg_3s =  18.81 t/s
+[44449] 3.43.209.082 I slot print_timing: id  0 | task 19 | prompt eval time =    4098.52 ms /   920 tokens (    4.45 ms per token,   224.47 tokens per second)
+[44449] 3.43.209.088 I slot print_timing: id  0 | task 19 |        eval time =    6842.37 ms /   128 tokens (   53.46 ms per token,    18.71 tokens per second)
+[44449] 3.43.209.089 I slot print_timing: id  0 | task 19 |       total time =   10940.89 ms /  1048 tokens
+[44449] 3.43.209.090 I slot print_timing: id  0 | task 19 |    graphs reused =        132
+[44449] 3.43.209.135 I slot      release: id  0 | task 19 | stop processing: n_tokens = 1047, truncated = 0
+3.43.262.506 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+[44449] 3.43.216.414 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.879
+[44449] 3.43.216.453 I slot launch_slot_: id  0 | task 149 | processing task, is_child = 0
+[44449] 3.46.733.220 I slot print_timing: id  0 | task 149 | prompt processing, n_tokens =    916, progress = 1.00, t =   3.52 s / 260.47 tokens per second
+[44449] 3.52.186.113 I slot print_timing: id  0 | task 149 | n_decoded =    100, tg =  18.91 t/s, tg_3s =  18.91 t/s
+[44449] 3.53.719.063 I slot print_timing: id  0 | task 149 | prompt eval time =    3682.09 ms /   920 tokens (    4.00 ms per token,   249.86 tokens per second)
+[44449] 3.53.719.068 I slot print_timing: id  0 | task 149 |        eval time =    6820.48 ms /   128 tokens (   53.29 ms per token,    18.77 tokens per second)
+[44449] 3.53.719.069 I slot print_timing: id  0 | task 149 |       total time =   10502.57 ms /  1048 tokens
+[44449] 3.53.719.071 I slot print_timing: id  0 | task 149 |    graphs reused =        255
+[44449] 3.53.719.111 I slot      release: id  0 | task 149 | stop processing: n_tokens = 1047, truncated = 0
+3.53.773.089 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+[44449] 3.53.726.782 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.879
+[44449] 3.53.726.818 I slot launch_slot_: id  0 | task 279 | processing task, is_child = 0
+[44449] 3.57.241.955 I slot print_timing: id  0 | task 279 | prompt processing, n_tokens =    916, progress = 1.00, t =   3.52 s / 260.59 tokens per second
+[44449] 4.02.680.399 I slot print_timing: id  0 | task 279 | n_decoded =    100, tg =  18.96 t/s, tg_3s =  18.96 t/s
+[44449] 4.04.203.885 I slot print_timing: id  0 | task 279 | prompt eval time =    3678.74 ms /   920 tokens (    4.00 ms per token,   250.09 tokens per second)
+[44449] 4.04.203.891 I slot print_timing: id  0 | task 279 |        eval time =    6798.30 ms /   128 tokens (   53.11 ms per token,    18.83 tokens per second)
+[44449] 4.04.203.892 I slot print_timing: id  0 | task 279 |       total time =   10477.04 ms /  1048 tokens
+[44449] 4.04.203.894 I slot print_timing: id  0 | task 279 |    graphs reused =        378
+[44449] 4.04.203.939 I slot      release: id  0 | task 279 | stop processing: n_tokens = 1047, truncated = 0
+4.04.256.320 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+[44449] 4.04.209.755 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.879
+[44449] 4.04.209.823 I slot launch_slot_: id  0 | task 409 | processing task, is_child = 0
+[44449] 4.07.718.795 I slot print_timing: id  0 | task 409 | prompt processing, n_tokens =    916, progress = 1.00, t =   3.51 s / 261.05 tokens per second
+[44449] 4.13.182.585 I slot print_timing: id  0 | task 409 | n_decoded =    100, tg =  18.86 t/s, tg_3s =  18.86 t/s
+[44449] 4.14.728.722 I slot print_timing: id  0 | task 409 | prompt eval time =    3670.09 ms /   920 tokens (    3.99 ms per token,   250.67 tokens per second)
+[44449] 4.14.728.727 I slot print_timing: id  0 | task 409 |        eval time =    6848.27 ms /   128 tokens (   53.50 ms per token,    18.69 tokens per second)
+[44449] 4.14.728.728 I slot print_timing: id  0 | task 409 |       total time =   10518.37 ms /  1048 tokens
+[44449] 4.14.728.729 I slot print_timing: id  0 | task 409 |    graphs reused =        501
+[44449] 4.14.728.768 I slot      release: id  0 | task 409 | stop processing: n_tokens = 1047, truncated = 0
+4.36.225.701 I srv          load: spawning server instance with name=gemma4-12b on port 37963
+4.36.226.210 I srv          load: spawning server instance with args:
+4.36.226.211 I srv          load:   /usr/bin/llama-server
+4.36.226.212 I srv          load:   --host
+4.36.226.212 I srv          load:   127.0.0.1
+4.36.226.215 I srv          load:   --jinja
+4.36.226.216 I srv          load:   --metrics
+4.36.226.216 I srv          load:   --port
+4.36.226.217 I srv          load:   37963
+4.36.226.217 I srv          load:   --reasoning-budget
+4.36.226.217 I srv          load:   8192
+4.36.226.217 I srv          load:   --sleep-idle-seconds
+4.36.226.217 I srv          load:   600
+4.36.226.217 I srv          load:   --model-draft
+4.36.226.219 I srv          load:   /root/.cache/huggingface/hub/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/980b060c40a8539ac159e0501a3e0f66a6365af3/mtp-gemma-4-12B-it.gguf
+4.36.226.219 I srv          load:   --spec-draft-n-max
+4.36.226.219 I srv          load:   4
+4.36.226.219 I srv          load:   --spec-type
+4.36.226.219 I srv          load:   draft-mtp
+4.36.226.221 I srv          load:   --no-webui
+4.36.226.222 I srv          load:   --alias
+4.36.226.222 I srv          load:   gemma4-12b
+4.36.226.223 I srv          load:   --batch-size
+4.36.226.223 I srv          load:   2048
+4.36.226.223 I srv          load:   --ctx-size
+4.36.226.223 I srv          load:   131072
+4.36.226.224 I srv          load:   --cache-ram
+4.36.226.224 I srv          load:   0
+4.36.226.224 I srv          load:   --cache-type-k
+4.36.226.224 I srv          load:   q8_0
+4.36.226.224 I srv          load:   --cache-type-v
+4.36.226.225 I srv          load:   q8_0
+4.36.226.225 I srv          load:   --flash-attn
+4.36.226.225 I srv          load:   on
+4.36.226.225 I srv          load:   --kv-unified
+4.36.226.292 I srv          load:   --model
+4.36.226.294 I srv          load:   /root/.cache/huggingface/hub/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/980b060c40a8539ac159e0501a3e0f66a6365af3/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf
+4.36.226.294 I srv          load:   --n-gpu-layers
+4.36.226.294 I srv          load:   999
+4.36.226.294 I srv          load:   --parallel
+4.36.226.294 I srv          load:   2
+4.36.226.294 I srv          load:   --slot-prompt-similarity
+4.36.226.294 I srv          load:   0.5
+4.36.226.295 I srv          load:   --ubatch-size
+4.36.226.295 I srv          load:   2048
+[37963] 0.00.181.397 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+[37963] 0.00.181.841 I srv          init: The UI is disabled
+[37963] 0.00.181.843 I srv          init: Use --ui/--no-ui (or deprecated --webui/--no-webui) to enable/disable
+[37963] 0.00.181.941 W srv  llama_server: -----------------
+[37963] 0.00.181.942 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+[37963] 0.00.181.943 W srv  llama_server: this can be a security risk (cross-origin attacks)
+[37963] 0.00.181.943 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+[37963] 0.00.181.943 W srv  llama_server: -----------------
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.0}}
+[37963] 0.00.183.220 I srv    load_model: loading model '/root/.cache/huggingface/hub/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/980b060c40a8539ac159e0501a3e0f66a6365af3/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf'
+[37963] 0.00.722.125 E llama_init_from_model: failed to initialize the context: Gemma4Assistant requires ctx_other to be set (this warning is normal during memory fitting)
+[37963] 0.00.793.447 W srv    load_model: [spec] failed to measure draft model memory: failed to create llama_context from model
+[37963] 0.01.495.725 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+[37963] 0.01.496.152 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+[37963] 0.01.514.857 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.0}}
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.2650178074836731}}
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.41895535588264465}}
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.6126362085342407}}
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.8017513751983643}}
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.9767040014266968}}
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":1.0}}
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":0.0}}
+[37963] 0.09.084.149 I common_speculative_init_result: loading draft model '/root/.cache/huggingface/hub/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/980b060c40a8539ac159e0501a3e0f66a6365af3/mtp-gemma-4-12B-it.gguf'
+[37963] 0.09.393.345 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+[37963] 0.09.393.606 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+[37963] 0.09.410.288 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":0.0}}
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":1.0}}
+[37963] 0.09.660.039 W llama_kv_cache: layer   3: sharing with layer 47. k = 0x3b801000, v = 0x1000
+[37963] 0.09.660.121 W llama_kv_cache: layer   0: sharing with layer 46. k = 0x29701000, v = 0x29f81000
+[37963] 0.09.660.122 W llama_kv_cache: layer   1: sharing with layer 46. k = 0x29701000, v = 0x29f81000
+[37963] 0.09.660.124 W llama_kv_cache: layer   2: sharing with layer 46. k = 0x29701000, v = 0x29f81000
+[37963] cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"spec_model","value":1.0}}
+[37963] 0.09.920.676 I srv    load_model: initializing, n_slots = 2, n_ctx_slot = 131072, kv_unified = 'true'
+[37963] 0.10.031.174 W srv          init: --cache-idle-slots requires --cache-ram, disabling
+[37963] 0.10.040.686 I srv  llama_server: model loaded
+[37963] 0.10.040.697 I srv  llama_server: listening on http://127.0.0.1:37963
+[37963] cmd_child_to_router:state:{"state":"ready","payload":{"id":"gemma4-12b","aliases":["gemma4-12b"],"tags":[],"object":"model","created":1786034066,"owned_by":"llamacpp","meta":{"vocab_type":2,"n_vocab":262144,"n_ctx":131072,"n_ctx_train":262144,"n_embd":3840,"n_params":11907350576,"size":6700531904,"ftype":"Q4_0"}}}
+4.51.242.269 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+[44449] 4.51.256.214 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 17242668351
+[44449] 4.51.256.343 I slot launch_slot_: id  0 | task 539 | processing task, is_child = 0
+[44449] 4.58.855.945 I slot print_timing: id  0 | task 539 | prompt processing, n_tokens =   2048, progress = 0.16, t =   7.60 s / 269.49 tokens per second
+[44449] 5.06.700.580 I slot print_timing: id  0 | task 539 | prompt processing, n_tokens =   4096, progress = 0.31, t =  15.44 s / 265.22 tokens per second
+[44449] 5.14.887.061 I slot print_timing: id  0 | task 539 | prompt processing, n_tokens =   6144, progress = 0.47, t =  23.63 s / 260.00 tokens per second
+[44449] 5.23.423.218 I slot print_timing: id  0 | task 539 | prompt processing, n_tokens =   8192, progress = 0.63, t =  32.17 s / 254.67 tokens per second
+[44449] 5.32.331.460 I slot print_timing: id  0 | task 539 | prompt processing, n_tokens =  10240, progress = 0.78, t =  41.07 s / 249.30 tokens per second
+[44449] 5.40.550.176 I slot print_timing: id  0 | task 539 | prompt processing, n_tokens =  12021, progress = 0.92, t =  49.29 s / 243.87 tokens per second
+[44449] 5.45.362.092 I slot print_timing: id  0 | task 539 | prompt processing, n_tokens =  13045, progress = 1.00, t =  54.11 s / 241.10 tokens per second
+[44449] 5.51.475.845 I slot print_timing: id  0 | task 539 | n_decoded =    100, tg =  16.95 t/s, tg_3s =  16.95 t/s
+[44449] 5.54.502.078 I slot print_timing: id  0 | task 539 | n_decoded =    151, tg =  16.92 t/s, tg_3s =  16.85 t/s
+[44449] 5.54.913.278 I slot print_timing: id  0 | task 539 | prompt eval time =   54319.66 ms / 13049 tokens (    4.16 ms per token,   240.23 tokens per second)
+[44449] 5.54.913.284 I slot print_timing: id  0 | task 539 |        eval time =    9337.10 ms /   158 tokens (   59.10 ms per token,    16.92 tokens per second)
+[44449] 5.54.913.285 I slot print_timing: id  0 | task 539 |       total time =   63656.76 ms / 13207 tokens
+[44449] 5.54.913.902 I slot print_timing: id  0 | task 539 |    graphs reused =        653
+[44449] 5.54.915.591 I slot      release: id  0 | task 539 | stop processing: n_tokens = 13207, truncated = 0
+6.16.726.837 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+[44449] 6.16.768.015 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.550 (> 0.100 thold), f_keep = 0.987
+[44449] 6.16.769.237 I slot launch_slot_: id  0 | task 705 | processing task, is_child = 0
+[44449] 6.26.274.391 I slot print_timing: id  0 | task 705 | prompt processing, n_tokens =   2048, progress = 0.59, t =   9.51 s / 215.47 tokens per second
+[44449] 6.36.239.472 I slot print_timing: id  0 | task 705 | prompt processing, n_tokens =   4096, progress = 0.68, t =  19.47 s / 210.37 tokens per second
+[44449] 6.46.507.510 I slot print_timing: id  0 | task 705 | prompt processing, n_tokens =   6144, progress = 0.77, t =  29.74 s / 206.60 tokens per second
+[44449] 6.57.120.606 I slot print_timing: id  0 | task 705 | prompt processing, n_tokens =   8192, progress = 0.85, t =  40.35 s / 203.02 tokens per second
+[44449] 7.08.051.802 I slot print_timing: id  0 | task 705 | prompt processing, n_tokens =  10240, progress = 0.94, t =  51.28 s / 199.68 tokens per second
+[44449] 7.11.003.744 I slot print_timing: id  0 | task 705 | prompt processing, n_tokens =  10665, progress = 0.96, t =  54.23 s / 196.65 tokens per second
+[44449] 7.16.754.707 I slot print_timing: id  0 | task 705 | prompt processing, n_tokens =  11689, progress = 1.00, t =  59.99 s / 194.86 tokens per second
+[44449] 7.23.226.740 I slot print_timing: id  0 | task 705 | n_decoded =    100, tg =  16.04 t/s, tg_3s =  16.04 t/s
+[44449] 7.26.256.763 I slot print_timing: id  0 | task 705 | n_decoded =    148, tg =  15.98 t/s, tg_3s =  15.84 t/s
+[44449] 7.27.010.858 I slot print_timing: id  0 | task 705 | prompt eval time =   60224.29 ms / 11693 tokens (    5.15 ms per token,   194.16 tokens per second)
+[44449] 7.27.010.864 I slot print_timing: id  0 | task 705 |        eval time =   10017.18 ms /   160 tokens (   62.61 ms per token,    15.97 tokens per second)
+[44449] 7.27.010.865 I slot print_timing: id  0 | task 705 |       total time =   70241.47 ms / 11853 tokens
+[44449] 7.27.010.866 I slot print_timing: id  0 | task 705 |    graphs reused =        809
+[44449] 7.27.012.779 I slot      release: id  0 | task 705 | stop processing: n_tokens = 23874, truncated = 0
+7.51.907.879 I srv  proxy_reques: proxying request to model deepseek-v4-flash on port 44449
+[44449] 7.51.947.163 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 17434952361
+[44449] 7.51.947.480 I slot launch_slot_: id  0 | task 873 | processing task, is_child = 0
+[44449] 7.59.578.583 I slot print_timing: id  0 | task 873 | prompt processing, n_tokens =   2048, progress = 0.10, t =   7.63 s / 268.38 tokens per second
+[44449] 8.07.461.984 I slot print_timing: id  0 | task 873 | prompt processing, n_tokens =   4096, progress = 0.20, t =  15.51 s / 264.01 tokens per second
+[44449] 8.15.738.032 I slot print_timing: id  0 | task 873 | prompt processing, n_tokens =   6144, progress = 0.30, t =  23.79 s / 258.25 tokens per second
+[44449] 8.24.325.445 I slot print_timing: id  0 | task 873 | prompt processing, n_tokens =   8192, progress = 0.40, t =  32.38 s / 253.01 tokens per second
+[44449] 8.33.243.469 I slot print_timing: id  0 | task 873 | prompt processing, n_tokens =  10240, progress = 0.50, t =  41.30 s / 247.97 tokens per second
+[44449] 8.42.473.038 I slot print_timing: id  0 | task 873 | prompt processing, n_tokens =  12288, progress = 0.60, t =  50.53 s / 243.20 tokens per second
+[44449] 8.52.020.834 I slot print_timing: id  0 | task 873 | prompt processing, n_tokens =  14336, progress = 0.70, t =  60.07 s / 238.64 tokens per second
+[44449] 9.02.079.261 I slot print_timing: id  0 | task 873 | prompt processing, n_tokens =  16384, progress = 0.80, t =  70.13 s / 233.62 tokens per second
+[44449] 9.12.431.304 I slot print_timing: id  0 | task 873 | prompt processing, n_tokens =  18432, progress = 0.90, t =  80.48 s / 229.02 tokens per second
+[44449] 9.17.683.234 I slot print_timing: id  0 | task 873 | prompt processing, n_tokens =  19424, progress = 0.95, t =  85.74 s / 226.56 tokens per second
+[44449] 9.23.117.456 I slot print_timing: id  0 | task 873 | prompt processing, n_tokens =  20448, progress = 1.00, t =  91.17 s / 224.28 tokens per second
+[44449] 9.29.434.473 I slot print_timing: id  0 | task 873 | n_decoded =    100, tg =  16.41 t/s, tg_3s =  16.41 t/s
+[44449] 9.31.145.354 I slot print_timing: id  0 | task 873 | prompt eval time =   91393.32 ms / 20452 tokens (    4.47 ms per token,   223.78 tokens per second)
+[44449] 9.31.145.360 I slot print_timing: id  0 | task 873 |        eval time =    7804.52 ms /   128 tokens (   60.97 ms per token,    16.40 tokens per second)
+[44449] 9.31.145.361 I slot print_timing: id  0 | task 873 |       total time =   99197.85 ms / 20580 tokens
+[44449] 9.31.145.362 I slot print_timing: id  0 | task 873 |    graphs reused =        932
+[44449] 9.31.149.967 I slot      release: id  0 | task 873 | stop processing: n_tokens = 20579, truncated = 0

@@ -1,0 +1,38 @@
+[
+  {
+    "quant": "iq2",
+    "task": "coding",
+    "completion_tokens": 1160,
+    "reasoning_chars": 2476,
+    "content_chars": 2310,
+    "finish_reason": "stop",
+    "wall_s": 60.6
+  },
+  {
+    "quant": "iq2",
+    "task": "reasoning",
+    "completion_tokens": 2048,
+    "reasoning_chars": 8020,
+    "content_chars": 0,
+    "finish_reason": "length",
+    "wall_s": 105.9
+  },
+  {
+    "quant": "iq3",
+    "task": "coding",
+    "completion_tokens": 1065,
+    "reasoning_chars": 2790,
+    "content_chars": 1893,
+    "finish_reason": "stop",
+    "wall_s": 58.1
+  },
+  {
+    "quant": "iq3",
+    "task": "reasoning",
+    "completion_tokens": 2048,
+    "reasoning_chars": 7665,
+    "content_chars": 0,
+    "finish_reason": "length",
+    "wall_s": 110.5
+  }
+]

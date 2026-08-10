@@ -2,13 +2,13 @@
 # swap-model.sh — manually swap the resident heavy model on the llama.cpp router.
 #
 # The router (:9292) hosts gemma4-e4b (always resident, fast aux) plus ONE of
-# the two heavy models — they CANNOT coexist (ornith 34.4 + ds4 98.4 + gemma
+# the two heavy models — they CANNOT coexist (qwen3.6-35b 34 + ds4 98.4 + gemma
 # 4.9 = 137 GiB > 120 GB VRAM cap).
 #
-#   ornith  -> daytime daily driver (complex tasks, planning, coding)
-#   ds4     -> the OTHER model (general chat, web search, scrape)
+#   qwen  -> daytime daily driver (complex tasks, planning, coding, web search)
+#   ds4   -> the OTHER model (heavy agentic / overnight work)
 #
-# Usage: swap-model.sh {ds4|ornith|status}
+# Usage: swap-model.sh {ds4|qwen|status}
 #
 # 🔴 ROUTER LIFECYCLE ROUTES ARE BODY-FORM ONLY. MEASURED 2026-08-07:
 #     POST /models/{id}/unload  -> 404 File Not Found      (what this script used
@@ -18,12 +18,12 @@
 #                                          | 404 for an unknown id
 # The old path form was swallowed by `|| true`, so `swap-model.sh ds4` NEVER
 # evicted anything. On 2026-08-07 a Hermes /model switch autoloaded DS4 on top of
-# a resident ornith and the kernel OOM-killed ornith 90s later. Every failure
+# a resident heavy model (qwen3.6-35b) and the kernel OOM-killed it 90s later. Every failure
 # path below is now FATAL for exactly that reason: never load a second heavy
 # model after an eviction we could not confirm.
 set -euo pipefail
 ROUTER="${ROUTER:-http://127.0.0.1:9292}"
-ORNITH="ornith-1.0-35b"
+QWEN="qwen3.6-35b"
 DS4="deepseek-v4-flash"
 
 # Sets REPLY_CODE / REPLY_BODY. Never fails the script itself — callers decide.
@@ -41,8 +41,8 @@ _post_model() {  # $1=load|unload  $2=model-id
 
 # -> "<value> <failed>", e.g. "loaded 0" / "unloaded 1" / "unknown 0".
 # ⚠️ `status.failed` is STICKY from the LAST load attempt, not a liveness signal:
-# ornith-1.0-35b still reports failed=true exit_code=1 from the 2026-08-07 OOM
-# kill while sitting perfectly happily at value=unloaded. Only `value` describes
+# a previously OOM-killed heavy model still reports failed=true exit_code=1 from the
+# 2026-08-07 kill while sitting perfectly happily at value=unloaded. Only `value` describes
 # what is running now — see wait_loaded() for the one place `failed` is used.
 _model_status() {  # $1=model-id
   local id="$1"
@@ -162,26 +162,26 @@ load() {  # $1=id $2=label
 
 case "${1:-status}" in
   ds4)
-    echo "Swapping to deepseek-v4-flash (general chat / web / scrape)..."
-    unload "$ORNITH" "ornith" || exit 1
+    echo "Swapping to deepseek-v4-flash (heavy agentic / overnight work)..."
+    unload "$QWEN" "qwen3.6-35b" || exit 1
     load "$DS4" "deepseek-v4-flash" || exit 1
     wait_loaded "$DS4" "deepseek-v4-flash" || exit 1
     echo; status
     ;;
-  ornith)
-    echo "Swapping to ornith-1.0-35b (daytime daily driver: coding/planning)..."
+  qwen)
+    echo "Swapping to qwen3.6-35b (daytime daily driver: coding/planning/web)..."
     unload "$DS4" "deepseek-v4-flash" || exit 1
-    load "$ORNITH" "ornith" || exit 1
-    wait_loaded "$ORNITH" "ornith" || exit 1
+    load "$QWEN" "qwen3.6-35b" || exit 1
+    wait_loaded "$QWEN" "qwen3.6-35b" || exit 1
     echo; status
     ;;
   status)
     status
     ;;
   *)
-    echo "Usage: swap-model.sh {ds4|ornith|status}"
-    echo "  ds4    -> load deepseek-v4-flash (evicts ornith)"
-    echo "  ornith -> load ornith-1.0-35b (evicts ds4)"
+    echo "Usage: swap-model.sh {ds4|qwen|status}"
+    echo "  ds4   -> load deepseek-v4-flash (evicts qwen3.6-35b)"
+    echo "  qwen  -> load qwen3.6-35b (evicts ds4)"
     echo "  status -> show which heavy model is resident"
     exit 1
     ;;

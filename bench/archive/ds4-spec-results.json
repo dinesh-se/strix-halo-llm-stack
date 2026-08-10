@@ -1,0 +1,13 @@
+[
+  {
+    "spec_type": "none",
+    "n_max": 2,
+    "pp": 61.22,
+    "tg": 18.81,
+    "prompt_n": 106,
+    "predicted_n": 128,
+    "peak_gtt_gib": 97.9,
+    "min_ram_avail_gib": 19.7,
+    "draft_acceptance": []
+  }
+]

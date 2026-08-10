@@ -1,0 +1,32 @@
+# rollback A/B  started 2026-08-04T21:25:54Z
+# KERNEL level (llama bench: no server, no MTP, no slots)
+
+# SKIP b10121 (llama-swap:b10121) -- not pulled yet
+
+  gemma4   ub=512   d=0      b9853     690.19 t/s (±67.07)  [17s]
+  gemma4   ub=512   d=0      b10200    690.26 t/s (±65.61)  [11s]
+
+  gemma4   ub=2048  d=0      b9853     732.94 t/s (±50.87)  [10s]
+  gemma4   ub=2048  d=0      b10200    734.01 t/s (±46.17)  [10s]
+
+  gemma4   ub=512   d=8192   b9853     541.60 t/s (±0.53)  [28s]
+  gemma4   ub=512   d=8192   b10200    540.87 t/s (±0.37)  [28s]
+
+  qwen27b  ub=256   d=0      b9853     290.30 t/s (±7.95)  [34s]
+  qwen27b  ub=256   d=0      b10200    292.33 t/s (±6.69)  [29s]
+
+  qwen27b  ub=1024  d=0      b9853     272.94 t/s (±3.45)  [26s]
+  qwen27b  ub=1024  d=0      b10200    273.14 t/s (±3.27)  [26s]
+
+
+## Kernel-level summary (t/s, and % vs b9853)
+
+| model | ub | depth | b9853 | b10121 | b10200 | b10200 vs b9853 |
+|---|---:|---:|---:|---:|---:|---:|
+| gemma4 | 512 | 0 | 690.2 | — | 690.3 | +0.0% |
+| gemma4 | 2048 | 0 | 732.9 | — | 734.0 | +0.1% |
+| gemma4 | 512 | 8192 | 541.6 | — | 540.9 | -0.1% |
+| qwen27b | 256 | 0 | 290.3 | — | 292.3 | +0.7% |
+| qwen27b | 1024 | 0 | 272.9 | — | 273.1 | +0.1% |
+
+saved: bench/rollback-ab-kernel.json

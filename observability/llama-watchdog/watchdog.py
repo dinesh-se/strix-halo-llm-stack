@@ -118,8 +118,8 @@ MAX_INCONCLUSIVE = int(os.environ.get("MAX_INCONCLUSIVE", "5"))
 # ---------------------------------------------------------------------------
 # The router has NO memory awareness and --models-max caps model COUNT, not
 # size. On 2026-08-07 a Hermes /model switch made the next chat request trigger
-# `ensure_model` for DS4 (~98 GiB) while ornith (~34 GiB) was resident; 90
-# seconds later the kernel OOM-killed ornith. Nothing in the router prevents
+# `ensure_model` for DS4 (~98 GiB) while qwen3.6-35b (~34 GiB) was resident; 90
+# seconds later the kernel OOM-killed the incumbent. Nothing in the router prevents
 # this, and it is not limited to manual swaps —
 # HINDSIGHT_API_REFLECT_LLM_MODEL=deepseek-v4-flash means a background reflect
 # can trigger the same autoload with nobody at the keyboard.
@@ -130,7 +130,7 @@ MAX_INCONCLUSIVE = int(os.environ.get("MAX_INCONCLUSIVE", "5"))
 # under it. The race margin is large — the OOM landed 90s into a 3-11 minute
 # load, and this poll evicts within ~5s.
 HEAVY_MODELS = [s.strip() for s in os.environ.get(
-    "HEAVY_MODELS", "ornith-1.0-35b,deepseek-v4-flash").split(",") if s.strip()]
+    "HEAVY_MODELS", "qwen3.6-35b,deepseek-v4-flash").split(",") if s.strip()]
 HEAVY_MUTEX = os.environ.get("HEAVY_MUTEX", "1") == "1"
 HEAVY_MUTEX_INTERVAL = float(os.environ.get("HEAVY_MUTEX_INTERVAL", "3"))
 # Per-model floor between evictions, so a model that keeps being re-requested
@@ -439,8 +439,8 @@ def model_state(model: str) -> str:
     """Router's lifecycle value for one model: loaded|loading|unloaded|absent|unknown.
 
     ⚠️ Reads `status.value` ONLY. `status.failed` is a sticky flag from the last
-    load attempt, not a liveness signal — ornith-1.0-35b reports failed=true
-    exit_code=1 from the 2026-08-07 OOM kill while sitting quietly at
+    load attempt, not a liveness signal — a previously OOM-killed heavy model
+    reports failed=true exit_code=1 from the 2026-08-07 kill while sitting quietly at
     value=unloaded. Conflating them would make every later decision wrong.
     """
     status, body = http(f"{ROUTER}/models", timeout=10)
@@ -745,7 +745,7 @@ def heavy_mutex_loop() -> None:
                 f"{'🟡' if ok else '🔴'} <b>llama-watchdog</b>\n"
                 f"Two heavy models were resident at once "
                 f"({', '.join(others)}) — this is the shape that OOM-killed "
-                f"ornith on 2026-08-07.\nEvicted <b>{victim}</b>: "
+                f"a resident model on 2026-08-07.\nEvicted <b>{victim}</b>: "
                 f"{'ok' if ok else f'FAILED ({status})'}."
             )
         except Exception as e:  # noqa: BLE001 - loop must never die

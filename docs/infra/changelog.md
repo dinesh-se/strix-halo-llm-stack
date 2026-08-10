@@ -22,6 +22,22 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-10 — Repo consolidation: SSoT moved to strix-halo-llm-stack; Source vs. Runtime Data split documented
+**Observed:** The infra SSoT was built in `~/llama-stack` — a local-only repo with
+no remote. The GitHub-tracked repo is `~/Dev/strix-halo-llm-stack`
+(`github.com/dinesh-se/strix-halo-llm-stack.git`). One agent nearly deleted
+`~/llama-stack` entirely, which would have broken `llama-router.service`.
+**Changed:**
+- Moved `docs/infra/` (current.md, changelog.md, README.md) from `~/llama-stack` → `~/Dev/strix-halo-llm-stack/docs/infra/`. Canonical path is now `~/Dev/strix-halo-llm-stack/docs/infra/`.
+- Archived one-off bench experiment harnesses + raw results to `bench/archive/` (decisions already captured in this changelog; canonical `mesa_baseline.py`/`gguf-vram-estimator.py`/`swap-model.sh` kept live in `tools/` + `bench/`).
+- Documented the **Source vs. Runtime Data split** in README.md + current.md + ai-infra-state skill: repo = code/config/docs/units; `~/llama-stack` = runtime weights + mounted `config/models.ini` (NEVER delete).
+- Updated Hermes MEMORY.md + ai-infra-state skill pointers to the new path.
+**Expected:** Both agents treat `~/Dev/strix-halo-llm-stack/docs/infra/` as the SSoT and never touch `~/llama-stack` runtime data.
+**Refs:** commit `1d8844c` (initial move+archive+push), this consolidation.
+**Smoke test:** `git -C ~/Dev/strix-halo-llm-stack status` clean; pushed to `origin/master`; `llama-router.service` mounts still resolve `~/llama-stack` paths.
+
+---
+
 ## 2026-08-10 — Unified infra SSoT established at ~/llama-stack/docs/infra/; file relocated from ~/docs/ai-infra
 **Observed:** Infra was tracked two ways — Claude kept this append-only history at `~/AI-INFRA-HISTORY.md`; Hermes relied on fragmented stores (MEMORY.md, Hindsight, state.db) with no pointer to this log. Meanwhile `~/docs/local-ai-stack.md` was stale (described removed granite-4.1-8b, LiteLLM, 96 GiB carveout, llama-swap). No single file both agents read.
 **Changed:** Created canonical store `~/llama-stack/docs/infra/` (git-tracked in the llama-stack repo): `current.md` (living snapshot), `changelog.md` (this file, moved from `~/.AI-INFRA-HISTORY.md`), `README.md` (protocol). Left pointer stub at `~/.AI-INFRA-HISTORY.md`. Marked `~/.docs/local-ai-stack.md` SUPERSEDED. Created Hermes skill `ai-infra-state` + MEMORY.md pointer. `current.md` written from live system state (router `llama-router.service` on :9292, native llama.cpp server; llama-swap retired).

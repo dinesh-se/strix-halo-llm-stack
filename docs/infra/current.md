@@ -80,6 +80,6 @@ Other listeners: SearXNG **:8888** (search). OpenWebUI **:3001** (via compose, p
 
 ## Docs
 
-- **This canonical store:** `~/llama-stack/docs/infra/` (`current.md` + `changelog.md` + `README.md`), versioned in the llama-stack git repo.
+- **This canonical store:** `~/Dev/strix-halo-llm-stack/docs/infra/` (`current.md` + `changelog.md` + `README.md`), versioned in the `strix-halo-llm-stack` git repo (pushed to GitHub). **Note the split:** this repo holds code/config/docs; the **runtime model weights + live `config/models.ini` live in `~/llama-stack/`** (gitignored, mounted by `llama-router.service`) — never delete/move those.
 - **`~/docs/local-ai-stack.md`** — SUPERSEDED (last accurate 2026-05-15; describes removed granite-4.1-8b/LiteLLM/96 GiB). Kept for history only.
 - **`~/docs/infra-todo.md`** — backlog, last updated 2026-05-15.

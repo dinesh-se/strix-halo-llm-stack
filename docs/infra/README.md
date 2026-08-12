@@ -78,6 +78,16 @@ and is runtime data. If it's code/config/docs/units — it belongs in the repo.
 6. **Version line:** `current.md` carries a `Last verified` timestamp. Update it
    whenever you touch the file. When both agents keep this honest, drift is
    detectable.
+7. **Verify before it becomes permanent:** every infra change must be **smoke
+   tested and confirmed working in complete condition before being accepted into
+   the production stack** (i.e. enabled at boot / made the new default). A
+   config edit, unit change, or model/backend swap that has not been exercised
+   end-to-end and shown to preserve the production baseline (decode/prefill
+   throughput, co-residency, no silent CPU fallback) is NOT production-ready —
+   it stays staged/disabled until the smoke test passes. Record the smoke test
+   and its result in the `changelog.md` entry for that change. Where a change
+   regresses the baseline, revert or keep it out of production rather than
+   shipping it.
 
 ## Claude Code
 

@@ -109,6 +109,7 @@ Consequences while unfirewalled — any LAN device can: use the models unauthent
 
 - **Always-injected curated layer:** `~/.hermes/memories/MEMORY.md` + `USER.md` (small, curated).
 - **Episodic/searchable layer:** **Hindsight**, `local_embedded` mode, bank `hermes`, **:9177**, local `bge-small-en-v1.5` embeddings + cross-encoder reranker. ⚠️ Daemon must run with `-p hermes` — default profile wants :8888 which collides with SearXNG.
+- **Structured output is GRAMMAR-ENFORCED** (`HINDSIGHT_API_LLM_STRICT_SCHEMA=true`, set 2026-08-12). Upstream defaults this to **False**, which only describes the schema in the prompt and validates with pydantic afterwards — that cost **11.7% of consolidation calls** (9/77 in one day) to `updates[N].observation_id` missing/None, since consolidation is the only *batch* schema (8 ids per call) and gemma4-e4b loses track. With `true`, llama.cpp GBNF-enforces and the field cannot be omitted (verified 40/40 across 5 trials). ⚠️ If a future Hindsight schema ever adds `anyOf`/`oneOf`/`pattern`, llama.cpp's json_schema→GBNF converter may reject it — that failure is HARD, not soft. Roll back to `hindsight-daemon.service.bak-20260812-pre-strict-schema`, or drop `consolidation_llm_batch_size` 8→4 instead.
 - **Session store:** `~/.hermes/state.db`.
 - **Notes vault:** `~/pa-notes` (indexed into Hindsight via `scripts/index_notes.py`, idempotent via mtime state file).
 

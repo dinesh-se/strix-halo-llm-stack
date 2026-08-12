@@ -22,6 +22,30 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-12 (later) — Hindsight structured output grammar-enforced (`LLM_STRICT_SCHEMA=true`); fixes 11.7% consolidation failure rate
+**Observed:** Follow-up on the 9 errors spotted in the LLM-request log during the reflect work (previous entry). All nine are **one failure class**:
+```
+ValidationError: _ConsolidationBatchResponse
+  updates.N.observation_id
+    Field required [type=missing]         x6
+    Input should be a valid string (None) x3
+```
+- **Rate: 9 of 77 consolidation calls = 11.7%.** All 74 non-consolidation calls (retain, dedup, reflect) were clean — **0 errors**.
+- **Only consolidation fails, and the reason is structural:** it is the sole **batch** schema (`consolidation_llm_batch_size=8`), so gemma4-e4b has to keep 8 observation ids straight across an array and sometimes emits an update carrying `text` but no `observation_id`. Failing index varied (`updates.0`–`updates.4`), so it is not positional.
+- **Root cause is an upstream default, not our config.** `hindsight_api/config.py:728` `DEFAULT_LLM_STRICT_SCHEMA = False` keeps the **soft** path: schema described in the prompt, JSON validated with pydantic *after* generation. Nothing prevents a weak model omitting a required field. Upstream's own comment names this exact scenario ("weaker self-hosted instruction-followers can violate ... wedging retain/consolidation on parse retries").
+- **Impact was churn, not data loss:** all 34 consolidation *operations* completed, `retry_count=0` at operation level — the wrapper's `MAX_RETRIES=3` absorbed every failure. Cost was **~5.2 min of wasted GPU time in one day** (worst single call 100.4 s) plus the latent risk of all three retries failing.
+- Unrelated to the reflect retarget: all 9 errors fall between 05:00–19:00 IST; the retarget went in at 21:45:59.
+**Changed:** `~/.config/systemd/user/hindsight-daemon.service` — added `Environment=HINDSIGHT_API_LLM_STRICT_SCHEMA=true` plus a comment block recording the measurement, the GBNF-rejection risk, and the fallback (drop `consolidation_llm_batch_size` 8→4). `daemon-reload` + restart. Backup: `hindsight-daemon.service.bak-20260812-pre-strict-schema`.
+**Expected:** OpenAI-compatible providers (our llama-router) receive `response_format: json_schema strict`, so llama.cpp GBNF-enforces the shape and `observation_id` **cannot** be omitted. Eliminates the retry churn and the tail risk.
+**Refs:** `hindsight_api/config.py:718-728` (`DEFAULT_LLAMACPP_NO_GRAMMAR`, `DEFAULT_LLM_STRICT_SCHEMA`), `engine/llm_wrapper.py:867` (strict resolved centrally, per-call arg OR server flag), `engine/consolidation/consolidator.py:494`.
+**Smoke test:** Restart clean — `active running`, **NRestarts=0**, `/proc/2541069/environ` shows `LLM_STRICT_SCHEMA=true`, `:9177` owned by MainPID, `/health` healthy. Then three checks:
+1. **Does llama.cpp accept the schema?** `_ConsolidationBatchResponse.model_json_schema()` uses `$defs` + `$ref` but **no `anyOf`/`oneOf`/`allOf`/`pattern`/`format`** — i.e. none of the constructs that break llama.cpp's json_schema→GBNF converter. Posted it directly to :9292 as `response_format: json_schema strict`: **accepted, 1.1 s, `finish_reason=stop`**, output parsed and passed pydantic validation.
+2. **Is the failing field actually enforced?** Forced the `updates` branch with 8-item batches, 5 trials, temperature 0.7, distinct seeds: **40 of 40 update objects carried a valid non-null `observation_id`**, 5/5 calls clean, 2.2–2.8 s each. Under the soft path the per-call failure rate was 11.7%.
+3. **Does Hindsight's own wrapper send it?** Non-persisting `/memories/dry-run-extract` → real `retain` call logged `status=success`, `finish_reason=stop`, 7.3 s, `response_schema=FactExtractionResponse`. Production code path confirmed.
+⚠️ **NOT yet proven:** a real *consolidation* batch through Hindsight — a manual `/consolidate` completed with **zero LLM calls** because nothing was pending. That will exercise naturally with use; verify via `llm-requests?limit=200` filtered to `operation=consolidation` and confirm `status=error` count stays 0.
+
+---
+
 ## 2026-08-12 — Hindsight reflect retargeted DS4 → gemma4-e4b (gotcha #6 CLOSED); DS4 config validated against the Reddit tuning guide
 **Observed:** Two threads in one session.
 

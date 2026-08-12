@@ -22,6 +22,17 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-12 (later 2) — Docs: record router image IS Nathan's fork build (prevent "stock Vulkan" misread)
+**Observed:** A Hermes analysis of the r/LocalLLaMA DS4 tuning guide reached a false conclusion — that the router runs stock mainline llama.cpp Vulkan and needs an upgrade to Nathan's fork. The premise was wrong: `kyuz0/amd-strix-halo-toolboxes` (pinned digest `ca4c4c…a0211`) IS Nathan's fork build (`Nathanw1014/llama.cpp:strix-halo-vulkan`), and the `10283 (b7b85da9c)` version string is a FORK counter, not mainline. The fork identity was documented only in the `llama-router.service` unit file's digest-pin comment (lines 83–93), not in `current.md` or memory, so a session that read `current.md` + `strings` on the binary (GGML_VK_MMID* are compile-time macros, absent from strings) misidentified the build.
+**Changed:** Docs only.
+- `current.md`: added a 🔴 note under *Router / serving* that the router image IS Nathan's fork build, version string is a fork counter not mainline, and ground truth is the unit file's digest-pin comment — do not infer stock Vulkan, do not propose a fork upgrade.
+- Hermes memory + `ai-infra-state` skill: added the same fork-identity rule (verify build from the unit file, never binary strings).
+**Expected:** Prevent a future session from recommending a non-existent build upgrade or misreading the DS4 numbers. Config beats prose — the unit file's digest pin is the ground truth for the build.
+**Refs:** r/LocalLLaMA `1vlmh0b` (DS4 Vulkan + DSpark guide); `llama-router.service` lines 83–93.
+**Smoke test:** `docker inspect llama-router --format '{{.Config.Image}}'` → `kyuz0/amd-strix-halo-toolboxes@sha256:ca4c4c…a0211` (matches pinned digest); `docker images` shows `:vulkan-radv-performance` tag present; unit file documents fork + fork-counter version.
+
+---
+
 ## 2026-08-12 (later) — Hindsight structured output grammar-enforced (`LLM_STRICT_SCHEMA=true`); fixes 11.7% consolidation failure rate
 **Observed:** Follow-up on the 9 errors spotted in the LLM-request log during the reflect work (previous entry). All nine are **one failure class**:
 ```

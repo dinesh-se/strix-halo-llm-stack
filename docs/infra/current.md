@@ -1,6 +1,6 @@
 # AI Infra — Current State
 
-> **Last verified:** 2026-08-10 21:05 IST (by Claude Code, from live system — router `/models`, systemd units, `ss -tlnp`, `/etc/ufw/ufw.conf`)
+> **Last verified:** 2026-08-12 21:40 IST (by Claude Code, from live system — router `/models` + `/slots` + `/props`, child `/metrics`, `/proc/<pid>/environ`, `ss -tlnp`, live pp2053 benchmark, live Hindsight `/reflect`)
 > This is the living snapshot. Read this before any infra change. Ground truth
 > is the config files themselves; if this file disagrees with them, trust the
 > config files and fix this file (and log it in `changelog.md`).
@@ -24,7 +24,7 @@
 |---|---|---|---|---|---|---|
 | `gemma4-e4b` | UD-Q4_K_XL + MTP, ~4.9 GiB | **resident** (load-on-startup) | 131072 | 4, kv-unified | ~114 | ALL aux work: Hermes compression/title-gen/curator/background_review, Hindsight retain+consolidation. sps 0.5, draft-mtp n=4, no-mmproj, reasoning-budget 8192 |
 | `qwen3.6-35b` | Q8_0 + MTP, ~34 GiB | **resident** (load-on-startup) | 131072 | 2, kv-unified | ~60 (67 w/ MTP) | daytime daily driver; Hermes/pi complex tasks, planning, coding, web search. sps 0.5, draft-mtp n=3, cache-reuse 256, no-mmproj |
-| `deepseek-v4-flash` | UD-IQ3_XXS, ~98.4 GiB | **EVICTED at boot** — on demand | 131072 | 3, kv-unified | ~18.8 bare | loaded via `swap-model.sh`; general chat/web/search/agentic. sps 0.5, cache-reuse 256, no dspark sidecar (OOM-killed 2026-08-06). Cold load 3–11 min. CANNOT coexist with qwen3.6-35b (98.4+34+4.9 = 137 > ~120 GiB cap) |
+| `deepseek-v4-flash` | UD-IQ3_XXS, ~98.4 GiB | **EVICTED at boot** — on demand | 131072 | 3, kv-unified | **19.48 decode / 268.98 prefill @pp2053** (MEASURED live 2026-08-12) | loaded via `swap-model.sh`; general chat/web/search/agentic. sps 0.5, cache-reuse 256, no dspark sidecar (OOM-killed 2026-08-06). Cold load 3–11 min. CANNOT coexist with qwen3.6-35b (98.4+34+4.9 = 137 > ~120 GiB cap). `n_ctx_train` is **1048576** — we run 12.5% of it |
 
 **Model swap:** `~/Dev/strix-halo-llm-stack/tools/swap-model.sh` (path corrected 2026-08-10 — it is NOT `~/llama-stack/swap-model.sh`; that is runtime data and holds no scripts) — evicts/loads `deepseek-v4-flash` on demand. Image-gen (sd.cpp ~19 GiB GTT + 8.7 GiB host RAM) also requires an eviction wrapper.
 
@@ -33,20 +33,32 @@
 ## Role → model mapping (aliases GONE — consumers pin concrete ids)
 
 - `classifier` → **gemma4-e4b** (`~/Dev/automated-workflows/.env` + `workers/llm.py`)
-- `extractor` → **`deepseek-v4-flash`** (Hindsight reflect, `HINDSIGHT_API_REFLECT_LLM_MODEL`) — 🔴 **corrected 2026-08-10, see the warning below**
+- `extractor` → **gemma4-e4b** (Hindsight reflect, `HINDSIGHT_API_REFLECT_LLM_MODEL`) — ✅ **retargeted off DS4 and VERIFIED LIVE 2026-08-12**
 - `memory-writer` → **gemma4-e4b** (Hindsight retain + consolidation, `HINDSIGHT_API_RETAIN_LLM_MODEL` + `HINDSIGHT_API_CONSOLIDATION_LLM_MODEL`)
 - ⚠️ These are pinned by hand in consumer config; there is no alias indirection anymore. Swap a model → edit all consumers.
 
-> 🔴 **THE 2026-08-09 `extractor` RETARGET WAS NEVER APPLIED (found 2026-08-10).**
-> Three sources disagreed; the live one is the dangerous one:
+> ✅ **RESOLVED 2026-08-12 — all three Hindsight roles now run on gemma4-e4b.**
+> The 2026-08-09 retarget had been written into this file and the `models.ini`
+> header but **never applied to the unit** (caught 2026-08-10, still unapplied on
+> 08-12). It is now applied and verified on the *running process*, not just the
+> unit file:
 >
-> | source | claims |
-> |---|---|
-> | this file (until now) | `extractor` → qwen3.6-35b |
-> | `~/llama-stack/config/models.ini` header comment (2026-08-09) | qwen3.6-35b, *"retargeted... so reflect stays on the resident heavy model"* |
-> | **live `hindsight-daemon.service`** | **`HINDSIGHT_API_REFLECT_LLM_MODEL=deepseek-v4-flash`** |
+> ```
+> /proc/<MainPID>/environ → HINDSIGHT_API_REFLECT_LLM_MODEL=gemma4-e4b
+> ```
 >
-> Per rule 4 (config beats prose) the systemd unit wins: **reflect still points at DS4.** The retarget was written into the docs and the ini comments but never made it into the unit. **Gotcha #6 below is therefore still OPEN, not mitigated.** The `models.ini` comment block actively asserts a fix that does not exist — do not trust it; trust `systemctl --user cat hindsight-daemon.service`. Fixing this is a pending infra change (edit the unit's `Environment=` line + `daemon-reload` + restart), deliberately NOT done on 2026-08-10 because DS4 was manually loaded for user work at the time.
+> Check it that way, not with `systemctl --user cat` alone — the 2026-08-01
+> failure was a gateway-spawned orphan holding :9177 while carrying **none** of
+> the unit's env. Also confirm `:9177` is owned by `MainPID`.
+>
+> **This one line was the whole change:** only the three role vars are set, the
+> bank config overrides no models, and `ReflectRequest` has no per-request model
+> field — so nothing else silently stayed on DS4.
+> Rollback: `~/.config/systemd/user/hindsight-daemon.service.bak-20260812-pre-reflect-gemma4`.
+>
+> **The lesson from 08-09→08-12 stands even though the bug is fixed:** docs and
+> ini comments asserted a fix that did not exist for three days. Config beats
+> prose — verify against the running process.
 
 ## Hermes
 
@@ -107,7 +119,8 @@ Consequences while unfirewalled — any LAN device can: use the models unauthent
 3. **`--parallel` + `--kv-unified` must be explicit** — setting `-np` makes slots non-auto and flips unified KV off, splitting `n_ctx` into N×(N/131072), which lands on Hermes' 64k minimum with zero margin.
 4. **`-sps 0.5`** (not 0.10 default) — a short prompt scores f_sim ~0.15 off the chat-template preamble alone and gets routed onto a slot holding a long prefix, destroying it.
 5. **Watchdog pins its 60s probe to the LAST slot** (`id_slot`) — an unpinned 2-token probe scores f_sim ~0, falls through to LRU, and overwrites the idle slot's cached prefix. Pinning confines damage to one slot.
-6. **DS4/LLM OOM path — 🔴 STILL OPEN (re-verified 2026-08-10).** A background reflect (Hindsight `extractor`) can trigger a ~98 GiB autoload with nobody at the keyboard — this OOM-killed llama-server 2026-08-07 11:01:49. **The claimed mitigation ("`extractor` is pinned to qwen3.6-35b") was never applied** — the live unit still says `deepseek-v4-flash`. See the warning under *Role → model mapping*. The only thing standing between this and an OOM is the watchdog's heavy-model mutex, which resolves the collision by *evicting a model* — including, potentially, one a user loaded on purpose.
+6. **DS4/LLM OOM path — ✅ CLOSED 2026-08-12.** A background reflect (Hindsight `extractor`) could name an unloaded ~98 GiB model and trigger a router autoload with nobody at the keyboard — this OOM-killed llama-server 2026-08-07 11:01:49. Fixed by retargeting reflect to the resident gemma4-e4b (see *Role → model mapping*); verified on the running process, and reflect exercised end-to-end. The watchdog heavy-model mutex is now **defence-in-depth, not the sole guard**.
+   ⚠️ **The underlying hazard is unchanged** — the router still has zero memory awareness and `--models-max` still caps model COUNT, not SIZE. **Any** consumer pinned to an unloaded heavy model re-opens this. When adding or repointing a background/unattended caller, pin it to a *resident* model. On this box an OOM is not a tidy process kill: DS4's memory lives in amdgpu GTT and is invisible to the kernel OOM killer, so on 2026-08-06 it reaped the entire GNOME session (pipewire, xdg portals, wezterm, the user systemd manager) instead.
 7. **Hindsight port landmine:** default local URL is :8888 which SearXNG owns. Always explicit `http://127.0.0.1:9177`.
 8. **Single-file bind-mount inode trap:** config files bind-mounted into containers are pinned to an INODE — editors that write temp-file-and-rename silently diverge. Verify via `/running`/behavior, not container health.
 9. **`persistent`/`load-on-startup` ≠ auto-load guarantee** — after restart, resident models may not be warm until first request. Warm them by hand.

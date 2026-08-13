@@ -1,6 +1,6 @@
 # AI Infra — Current State
 
-> **Last verified:** 2026-08-12 21:40 IST (by Claude Code, from live system — router `/models` + `/slots` + `/props`, child `/metrics`, `/proc/<pid>/environ`, `ss -tlnp`, live pp2053 benchmark, live Hindsight `/reflect`)
+> **Last verified:** 2026-08-13 21:00 IST (by Hermes, from live system — WhatsApp bridge health on :3000, `ss -tlnp`, `docker ps`)
 > This is the living snapshot. Read this before any infra change. Ground truth
 > is the config files themselves; if this file disagrees with them, trust the
 > config files and fix this file (and log it in `changelog.md`).
@@ -83,7 +83,7 @@
 | `hermes-gateway.service` | — | messaging (Telegram/Slack/WhatsApp) |
 | `hermes-dashboard.service` | 9119 | web UI |
 
-Other listeners: SearXNG **:8888** (search). OpenWebUI **:3001** (via compose, points at :9292).
+Other listeners: SearXNG **:8888** (search). OpenWebUI **:3001** (via compose, points at :9292). WhatsApp bridge **:3000** (Hermes, self-chat mode). Grafana retired 2026-08-13.
 
 ## Network exposure / bind addresses
 
@@ -95,6 +95,8 @@ Other listeners: SearXNG **:8888** (search). OpenWebUI **:3001** (via compose, p
 | 3002 | Firecrawl API (docker `-p 0.0.0.0:3002`) | **`0.0.0.0`** | **none** |
 | 9611 / 9610 / 9100 | watchdog / amdgpu exporter / node-exporter | **`0.0.0.0`** | none |
 | 3001 / 3000 / 8428 | OpenWebUI / Grafana / VictoriaMetrics | `127.0.0.1` ✅ | — |
+
+> **2026-08-13: Grafana retired.** The `grafana` service was removed from `~/observability/stack/docker-compose.yml` and its container deleted; **:3000 is now owned by the Hermes WhatsApp bridge** (`whatsapp.extra.bridge_port: 3000`). VictoriaMetrics (:8428) and node-exporter (:9100) remain. Grafana-provisioned Telegram alert rules are gone; the llama-watchdog's own Telegram alerts remain.
 
 **Host firewall state: NONE.** `/etc/ufw/ufw.conf` → `ENABLED=no`; firewalld and nftables both inactive. ⚠️ `systemctl is-active ufw` returns **`active`** even when disabled (oneshot unit, `SubState=exited`) — **never use it to check firewall state; read `ufw.conf` or `sudo ufw status verbose`.** Likewise, curling the host's own LAN IP *from the host* proves nothing: ufw accepts everything on `lo` and that traffic takes the `lo` path.
 

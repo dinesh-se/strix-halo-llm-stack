@@ -22,6 +22,17 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-13 — Retire Grafana, free :3000 for WhatsApp bridge
+**Observed:** Grafana unused for a long time; port 3000 wanted by the WhatsApp bridge (adapter default + the `bridge_port` config was mis-nested under `whatsapp:` instead of `whatsapp.extra:`, so the bridge kept binding the default :3000 and failing against Grafana).
+**Changed:**
+- `~/observability/stack/docker-compose.yml`: removed the `grafana` service and `grafana-data` volume; `docker compose up -d --remove-orphans` + `docker rm -f grafana`.
+- `~/.hermes/config.yaml`: moved `whatsapp.bridge_port` under `whatsapp.extra.bridge_port: 3000` (adapter reads `config.extra.get("bridge_port")`).
+- Gateway restarted (`hermes gateway restart`).
+**Expected:** Grafana gone, :3000 freed; WhatsApp bridge binds :3000 and connects to Hermes.
+**Refs:** Hermes WhatsApp adapter (`plugins/platforms/whatsapp/adapter.py` reads `extra.bridge_port`, default 3000); bridge.js `--port`.
+**Smoke test:** `ss -tlnp | grep 3000` → bridge MainThread pid; `curl 127.0.0.1:3000/health` → `{"status":"connected",...}`; bridge.log shows "WhatsApp bridge listening on port 3000" + "WhatsApp connected!"; gateway log "[Whatsapp] Bridge started on port 3000". Grafana container no longer in `docker ps`.
+**Note:** Grafana-provisioned Telegram alert rules (ai-stack-watchdog-down, hindsight-down, llama-queue, model-wedged) are retired with Grafana; the watchdog's own Telegram alerts remain. VictoriaMetrics (:8428) + node-exporter (:9100) kept.
+
 ## 2026-08-12 (later 2) — Docs: record router image IS Nathan's fork build (prevent "stock Vulkan" misread)
 **Observed:** A Hermes analysis of the r/LocalLLaMA DS4 tuning guide reached a false conclusion — that the router runs stock mainline llama.cpp Vulkan and needs an upgrade to Nathan's fork. The premise was wrong: `kyuz0/amd-strix-halo-toolboxes` (pinned digest `ca4c4c…a0211`) IS Nathan's fork build (`Nathanw1014/llama.cpp:strix-halo-vulkan`), and the `10283 (b7b85da9c)` version string is a FORK counter, not mainline. The fork identity was documented only in the `llama-router.service` unit file's digest-pin comment (lines 83–93), not in `current.md` or memory, so a session that read `current.md` + `strings` on the binary (GGML_VK_MMID* are compile-time macros, absent from strings) misidentified the build.
 **Changed:** Docs only.

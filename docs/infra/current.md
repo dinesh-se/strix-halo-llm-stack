@@ -1,6 +1,6 @@
 # AI Infra — Current State
 
-> **Last verified:** 2026-08-13 21:00 IST (by Hermes, from live system — WhatsApp bridge health on :3000, `ss -tlnp`, `docker ps`)
+> **Last verified:** 2026-08-15 (by Hermes, from live system — router `:9292` health, `/v1/models` state: ds4 + gemma resident, qwen unloaded)
 > This is the living snapshot. Read this before any infra change. Ground truth
 > is the config files themselves; if this file disagrees with them, trust the
 > config files and fix this file (and log it in `changelog.md`).
@@ -24,12 +24,12 @@
 | id | quant / size | residency | ctx | parallel | t/s (measured) | notes |
 |---|---|---|---|---|---|---|
 | `gemma4-e4b` | UD-Q4_K_XL + MTP, ~4.9 GiB | **resident** (load-on-startup) | 131072 | 4, kv-unified | ~114 | ALL aux work: Hermes compression/title-gen/curator/background_review, Hindsight retain+consolidation. sps 0.5, draft-mtp n=4, no-mmproj, reasoning-budget 8192 |
-| `qwen3.6-35b` | Q8_0 + MTP, ~34 GiB | **resident** (load-on-startup) | 131072 | 2, kv-unified | ~60 (67 w/ MTP) | daytime daily driver; Hermes/pi complex tasks, planning, coding, web search. sps 0.5, draft-mtp n=3, cache-reuse 256, no-mmproj |
-| `deepseek-v4-flash` | UD-IQ3_XXS, ~98.4 GiB | **EVICTED at boot** — on demand | 131072 | 3, kv-unified | **19.48 decode / 268.98 prefill @pp2053** (MEASURED live 2026-08-12) | loaded via `swap-model.sh`; general chat/web/search/agentic. sps 0.5, cache-reuse 256, no dspark sidecar (OOM-killed 2026-08-06). Cold load 3–11 min. CANNOT coexist with qwen3.6-35b (98.4+34+4.9 = 137 > ~120 GiB cap). `n_ctx_train` is **1048576** — we run 12.5% of it |
+| `qwen3.6-35b` | Q8_0 + MTP, ~34 GiB | **PAUSED — on-demand only** (2026-08-15) | 131072 | 2, kv-unified | ~60 (67 w/ MTP) | results unreliable per user; no longer the daily driver. Load via `swap-model.sh` only. sps 0.5, draft-mtp n=3, cache-reuse 256, no-mmproj |
+| `deepseek-v4-flash` | UD-IQ3_XXS, ~98.4 GiB | **RESIDENT at boot** (2026-08-15) | 131072 | 3, kv-unified | **19.48 decode / 268.98 prefill @pp2053** (MEASURED live 2026-08-12) | primary resident heavy model: Hermes/pi default, all 5 pi-kalam roles, Hindsight reflect, Open WebUI, email digest. sps 0.5, cache-reuse 256, no dspark sidecar (OOM-killed 2026-08-06). Cold load 3–11 min. CANNOT coexist with qwen3.6-35b (98.4+34+4.9 = 137 > ~120 GiB cap) — qwen is evicted whenever ds4 loads. `n_ctx_train` is **1048576** — we run 12.5% of it |
 
-**Model swap:** `~/Dev/strix-halo-llm-stack/tools/swap-model.sh` (path corrected 2026-08-10 — it is NOT `~/llama-stack/swap-model.sh`; that is runtime data and holds no scripts) — evicts/loads `deepseek-v4-flash` on demand. Image-gen (sd.cpp ~19 GiB GTT + 8.7 GiB host RAM) also requires an eviction wrapper.
+**Model swap:** `~/Dev/strix-halo-llm-stack/tools/swap-model.sh` (path corrected 2026-08-10 — it is NOT `~/llama-stack/swap-model.sh`; that is runtime data and holds no scripts) — evicts/loads `deepseek-v4-flash` or `qwen3.6-35b` on demand. Since 2026-08-15 the steady state is DS4 resident (qwen paused); `swap-model.sh qwen3.6-35b` inverts it (DS4 evicted, qwen loads). Image-gen (sd.cpp ~19 GiB GTT + 8.7 GiB host RAM) still requires an eviction wrapper.
 
-> **Residency is a runtime state, not config.** The table above is the *steady state after a router restart*. A manual `swap-model.sh ds4` (or any request naming an unloaded heavy model) legitimately inverts it: DS4 loaded, `qwen3.6-35b` evicted by the watchdog heavy-model mutex, host RAM down to ~8 GiB available. **That is normal operation — do not "fix" it and do not log it as drift.** Check live state with `curl -s localhost:9292/models | jq '.[]|{id,status:.status.value}'` before drawing conclusions from this table. Observed example: 2026-08-10 14:15 (user-initiated DS4 load; mutex evicted qwen at 14:15:50, exactly as designed).
+> **Residency is a runtime state, not config.** The table above is the *steady state after a router restart* (2026-08-15: DS4 + gemma resident, qwen paused). A manual `swap-model.sh qwen3.6-35b` (or any request naming the unloaded heavy model) legitimately inverts it: qwen loaded, `deepseek-v4-flash` evicted by the watchdog heavy-model mutex, host RAM down to ~8 GiB available. **That is normal operation — do not "fix" it and do not log it as drift.** Check live state with `curl -s localhost:9292/models | jq '.[]|{id,status:.status.value}'` before drawing conclusions from this table.
 
 ## Role → model mapping (aliases GONE — consumers pin concrete ids)
 
@@ -64,14 +64,14 @@
 ## Hermes
 
 - **Config:** `~/.hermes/config.yaml`
-- `model.default: deepseek-v4-flash`, `provider: custom:local-models`
+- `model.default: deepseek-v4-flash`, `provider: custom:local-models` (changed 2026-08-15 from qwen3.6-35b — this is what cron jobs resolve to; the check-in crons were failing because they resolved to the evicted qwen)
 - **custom_providers** `Local Models` → `http://127.0.0.1:9292/v1`, api_key `unused-llama-router-direct`, max_tokens 32768, models = [deepseek-v4-flash, gemma4-e4b, qwen3.6-35b]
 - Aux roles (compression, title_generation, curator, background_review, delegation) → **gemma4-e4b** at :9292
 - `agent.disabled_toolsets: []` (delegation re-enabled)
 
 ## pi
 
-- **Config:** `~/.pi/agent/models.json` — provider `litellm` → `http://localhost:9292/v1`, apiKey `unused-llama-router-direct`, models qwen3.6-35b + deepseek-v4-flash, contextWindow 131072, maxTokens 16384.
+- **Config:** `~/.pi/agent/models.json` — provider `litellm` → `http://localhost:9292/v1`, apiKey `unused-llama-router-direct`, models qwen3.6-35b + deepseek-v4-flash, contextWindow 131072, maxTokens 16384. **`defaultModel: deepseek-v4-flash`** (qwen paused 2026-08-15). pi-kalam (`~/Dev/pi-kalam`) config.ts already pins all roles to deepseek-v4-flash — no change needed there.
 
 ## Services (systemd user units, all active)
 

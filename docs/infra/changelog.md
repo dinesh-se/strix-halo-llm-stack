@@ -22,6 +22,18 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-15 — Pause qwen3.6-35b; DS4 becomes the sole resident heavy model
+**Observed:** The 07:30 morning check-in and 21:30 night check-in cron jobs failed repeatedly with `HTTP 500: proxy error: Failed to read connection`. Root cause: cron jobs with `model: null` resolved to `model.default: qwen3.6-35b` in `~/.hermes/config.yaml`, which was EVICTED (paused) — the router returned 500 when asked to serve an unloaded model. User also reported qwen3.6-35b results unreliable ("I don't get correct results from it all the time").
+**Changed:**
+- `~/.hermes/config.yaml`: `model.default` → `deepseek-v4-flash` (via `hermes config set model.default`)
+- Both check-in crons (`827131b2c8b5` morning, `5d37a9e1e859` night): pinned `--model deepseek-v4-flash --provider custom:local-models`; stored model/provider snapshots now resolve to the resident DS4
+- `~/llama-stack/config/models.ini` + repo template `~/Dev/strix-halo-llm-stack/config/models.ini`: `[qwen3.6-35b] load-on-startup = false` (paused, on-demand), `[deepseek-v4-flash] load-on-startup = true` (resident); updated role-alias header comments
+- `~/.config/systemd/user/llama-router.service`: Description updated to reflect new lineup
+- pi: `~/.pi/agent/models.json` defaultModel already `deepseek-v4-flash`; pi-kalam config.ts already pins all roles to ds4 — no change needed
+**Expected:** Cron check-ins resolve to the loaded DS4 (no more 500s); only ds4 + gemma resident; qwen available on demand via `swap-model.sh qwen3.6-35b`.
+**Refs:** (internal) router `/v1/models` state after restart — ds4 + gemma loaded, qwen unloaded
+**Smoke test:** `hermes config get model.default` → deepseek-v4-flash; cron job listing shows `model: deepseek-v4-flash, provider: custom:local-models`; router restart applied — `/v1/models` shows ds4/gemma loaded, qwen unloaded. Morning check-in re-triggered (job `827131b2c8b5`) to confirm it now completes without the 500.
+
 ## 2026-08-13 — Retire Grafana, free :3000 for WhatsApp bridge
 **Observed:** Grafana unused for a long time; port 3000 wanted by the WhatsApp bridge (adapter default + the `bridge_port` config was mis-nested under `whatsapp:` instead of `whatsapp.extra:`, so the bridge kept binding the default :3000 and failing against Grafana).
 **Changed:**

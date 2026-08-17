@@ -22,6 +22,17 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-17 — Remove qwen3.6-35b from configs; raise DS4 context to 262144 (3-way sync)
+**Observed:** User flagged that the router reported 3 models (`deepseek-v4-flash`, `gemma4-e4b`, `qwen3.6-35b`) when the expected lineup is only 2 (DS4 + gemma). The configs genuinely still carried qwen3.6-35b despite the 08-15 "pause" — it remained registered in all three config files and loaded at startup. Separately, DS4 context was being raised 131072 → 262144 (memory-safe: DS4 KV ~4.5 MiB/1k tokens, +~590 MiB for the extra 131k; peak ~103.3 GiB with gemma, well under the ~120 GiB cap).
+**Changed:**
+- `~/llama-stack/config/models.ini` + repo template `~/Dev/strix-halo-llm-stack/config/models.ini`: removed the entire `[qwen3.6-35b]` section + its comment block; `[deepseek-v4-flash] ctx-size = 131072 → 262144`
+- `~/.hermes/config.yaml`: `custom_providers[Local Models].models` = `[deepseek-v4-flash, gemma4-e4b]` (qwen removed); `model.context_length` set to 262144 via `hermes config set` (note: CLI stored the models list as a JSON string — fixed in-place to a proper YAML list)
+- `~/.pi/agent/models.json`: removed the qwen3.6-35b entry; DS4 `contextWindow: 131072 → 262144`
+- `docs/infra/current.md`: updated model table (qwen row removed, DS4 ctx 262144), router unit mount list, Hermes/pi config references, residency note
+**Expected:** Router serves only DS4 + gemma; DS4 loads with n_ctx 262144 (25% of native 1048576); 3-way ctx sync (models.ini / config.yaml / models.json) holds at 262144. qwen3.6-35b no longer available on demand via swap — removed per user instruction.
+**Refs:** llama.cpp router `/v1/models`; Hermes source (`agent_init.py` context resolution, `hermes_cli/config.py`) confirmed per-model `context_length` is checked in the models list at runtime.
+**Smoke test:** `docker restart llama-router` → `/v1/models` returns `['deepseek-v4-flash', 'gemma4-e4b']`; router log shows `n_ctx_slot = 262144`, `"n_ctx": 262144, "n_ctx_train": 1048576`; DS4 worker cold-loaded and serving (proxying requests on its port). All three configs verified: models.ini sections = `[*]`, `[gemma4-e4b]`, `[deepseek-v4-flash]`; config.yaml models = list of 2; pi models.json ids = 2. Backup of config.yaml at `~/.hermes/config.yaml.bak-ctx-qwen-rm`.
+
 ## 2026-08-15 — Pause qwen3.6-35b; DS4 becomes the sole resident heavy model
 **Observed:** The 07:30 morning check-in and 21:30 night check-in cron jobs failed repeatedly with `HTTP 500: proxy error: Failed to read connection`. Root cause: cron jobs with `model: null` resolved to `model.default: qwen3.6-35b` in `~/.hermes/config.yaml`, which was EVICTED (paused) — the router returned 500 when asked to serve an unloaded model. User also reported qwen3.6-35b results unreliable ("I don't get correct results from it all the time").
 **Changed:**

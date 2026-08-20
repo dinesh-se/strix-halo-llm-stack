@@ -22,6 +22,82 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-20 (later 3) — 🔴 `parallel = 1` DESTROYS the prompt cache via the watchdog probe. It is very likely why qwen was judged slow.
+
+**Observed:** User asked whether `--parallel 1` would improve DS4. Investigating
+turned up a **serious latent misconfiguration on `qwen3.8-27b-q4`**, and it
+retroactively undermines yesterday's qwen verdict.
+
+**Mechanism (verified in code AND live).** `watchdog.py:pin_slot()` returns
+`max(slot_ids)` — the probe is pinned to the HIGHEST slot so it cannot LRU-steal
+a conversation's cached prefix (the 2026-08-07 fix). The probe is a 2-token raw
+`/completion`, so it has ~zero LCP with any real conversation and **overwrites
+whatever prefix sits in its slot, every 60 s**.
+
+**At `parallel = 1` there is only slot 0, so `max(ids) = 0` — the probe slot IS
+the conversation slot.** Every turn then pays a full re-prefill.
+
+**PROVEN LIVE on DS4 slot 2 (already the probe slot, so nothing was lost):**
+```
+before           : {0: 25584, 1: 90018, 2: 1}
+after my request : {0: 25584, 1: 90018, 2: 2701}   <- slot 2 holds a 2701-tok prompt
+... 75 s (one probe cycle) ...
+after probe      : {0: 25584, 1: 90018, 2: 1}      <- WIPED. slots 0/1 untouched.
+```
+
+**MEASURED consequence across 9,698 logged Hermes calls — the split is by
+`parallel`, not by model:**
+
+| model | `parallel` | calls | with `cache=` | med prompt | **med latency** |
+|---|---|---|---|---|---|
+| deepseek-v4-flash | 3 | 4225 | 94% | 76,217 | **41.4 s** |
+| qwen3.6-35b | 2 | 2326 | 90% | 60,100 | **15.0 s** |
+| gemma4-e4b | 4 | 918 | 96% | 43,676 | 23.8 s |
+| gpt-oss-120b | ≥2 | 608 | 95% | 39,642 | 10.4 s |
+| qwen3.6-27b | ≥2 | 338 | 95% | 57,370 | 43.0 s |
+| **qwen3.8-27b-q4** | **1** | 16 | **18%** | 56,611 | **373.0 s** |
+| **qwen3.8-27b** | **1** | 1 | **0%** | 26,220 | 211.6 s |
+
+**Every model at `parallel ≥ 2` gets 79–96% cache reuse. Both `parallel = 1`
+models get 0–18%.** `qwen3.6-35b` at `parallel = 2` (confirmed from
+`bc61987^:config/models.ini`) served a nearly identical median prompt (60,100 vs
+56,611) in **15.0 s vs 373.0 s — 25× faster**, despite the Q4 being the faster
+model per token (31–33 vs ~17 t/s).
+
+The Q4's own call sequence is the giveaway — `in=` 72024 → 73054 → 77467 → 78805
+→ 80627 → 81571 is a **growing multi-turn conversation**, exactly the shape that
+gets 98% cache hits on DS4, and it got **none**.
+
+**🔴 This reframes the 2026-08-19/20 qwen verdict.** The model was benchmarked at
+31–33 t/s decode and then judged "not great as a daily driver" from lived
+experience. That lived experience was 4–10 minutes per turn — but the cause was
+`parallel = 1` letting the watchdog wipe the cache every 60 s, **not the model**.
+The rejection may still stand on other grounds; it has NOT been tested with a
+sane slot count.
+
+**Answer to the original question — `parallel = 1` on DS4 would be far worse:**
+- Slot 0 becomes the probe slot → a full ~11 min re-prefill on essentially every
+  turn (see the 90k prefill measurement in the previous entry).
+- It also reintroduces head-of-line blocking, the reason `-np` was raised to 2
+  and then 3 in the first place.
+- It saves only ~0.25 GB of compute buffer per dropped slot; under `kv-unified`
+  the KV buffer is `n_ctx` TOTAL, so `parallel` does **not** change KV size.
+- **Do not do it.**
+
+**Changed:** nothing yet — raising `[qwen3.8-27b-q4] parallel 1 → 2` is the
+obvious fix (costs ~0.25 GB, needs one router restart) but is the user's call.
+
+**⚠️ Caveat stated honestly:** n=16 calls for the Q4 is a small sample. The
+mechanism is independently proven above, and the conversation-shaped call
+sequence is strong corroboration, but the 25× figure itself rests on few calls.
+
+**Standing rule this establishes:** **never run a conversational model at
+`parallel = 1` while llama-watchdog is probing it.** `parallel` must be at least
+2 — one slot for the probe, one for the conversation. Keep this in lockstep with
+any new model section in `models.ini`.
+
+---
+
 ## 2026-08-20 (later 2) — Web survey against our config: one hypothesis REFUTED by test, prefill curve extended to 90k, three "do not do" answers
 
 **Observed:** User asked whether anything published would improve our setup.

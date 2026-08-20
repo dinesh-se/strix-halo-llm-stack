@@ -22,6 +22,57 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-20 (later 4) — ⏳ TEMPORARY: Hermes on qwen3.8-27b-q4 for a trial day. REVERT WITH `tools/end-qwen-trial.sh`.
+
+**Observed:** With `parallel = 2` proven to fix the cache wipe (entry below), the
+qwen verdict is unsettled and the user wants a real day of use to re-take it.
+Also re-measured DS4 after today's two restarts to confirm nothing drifted:
+**250.23 PP / 18.62 TG @pp2053** (trials 244–259 PP, 18.53–18.63 TG) vs this
+morning's 256.68 / 18.59 and the 08-12 baseline 268.98 / 19.48. **Decode
+identical to 3 significant figures; DS4 is stable.**
+
+**Changed — TWO keys only, both in `~/.hermes/config.yaml`** (backup
+`config.yaml.bak-20260820-pre-qwen-trial`):
+- `model.default`: `deepseek-v4-flash` → **`qwen3.8-27b-q4`**
+- `custom_providers[Local Models].model`: same
+Then `swap-model.sh qwen` (18 s). `model.context_length` 262144, the selectable
+models list, and all aux roles (gemma4-e4b) are untouched.
+
+**🔴 DELIBERATELY NOT CHANGED — the user's explicit decision after being shown
+the risk.** Both check-in crons stay pinned to `deepseek-v4-flash`, and
+OpenWebUI keeps `DEFAULT_MODELS=deepseek-v4-flash`. Consequences, stated so the
+next session does not read this as drift:
+- **The trial window is ~11:40 → 21:35 today.** At 21:35 `night-check-in` names
+  DS4, the router autoloads it, the heavy mutex evicts qwen, and DS4 stays
+  resident from then on (the overnight cycle no longer swaps away — see the
+  08-20 night-cycle change).
+- **There IS a real OOM window at 21:35** if the user is actively driving qwen
+  while the cron retries for DS4 — that is precisely the 2026-08-19 21:37
+  contention that killed the router. The mutex guards co-residency, not
+  contention. Risk accepted knowingly.
+- `overnight-tasks` (23:00) will **skip** tonight: 0 pending task files, and the
+  parser checks before any swap. If a task is added during the day it will swap
+  to DS4 and stay there.
+- Opening OpenWebUI during the trial silently evicts qwen.
+
+**Revert:** `tools/end-qwen-trial.sh` (new, `bash -n` clean) — reverts both keys
+and runs `swap-model.sh ds4`. It reverts *only* the two keys because only two
+were changed. ⚠️ A RUNNING Hermes session keeps its pinned model in session
+state, so a **new session** is required both to enter and to leave the trial.
+
+**Smoke test — PASSED.** `hermes config get model.default` → `qwen3.8-27b-q4`.
+Live: `qwen3.8-27b-q4 loaded np=2 ctx=262144` + `gemma4-e4b loaded`, DS4
+unloaded. Real completion through the router: a non-trivial probability question
+answered correctly (`5/14`), `finish=stop`. All five services `active`,
+`NRestarts=0`, MemAvailable **87.0 GiB**, no OOM/amdgpu events.
+
+**What this trial is FOR:** the 08-19/20 rejection was measured at
+`parallel = 1`, i.e. 4–10 min per turn of pure re-prefill. Judge it now on
+multi-turn feel, not on a benchmark. Decode is 31–33 t/s vs DS4's 18.6, but qwen
+has 2 slots vs DS4's 3 and reasoning is always on.
+
+---
+
 ## 2026-08-20 (later 3) — 🔴 `parallel = 1` DESTROYS the prompt cache via the watchdog probe. It is very likely why qwen was judged slow.
 
 **Observed:** User asked whether `--parallel 1` would improve DS4. Investigating

@@ -140,6 +140,14 @@ guard has no way to arise on its own.
   and nothing else.
 - Disk: 854 → **881 GB free** after deleting the Q8_0 GGUF; the Q4 still resolves
   inside the container and served a live completion afterwards.
+- `night-check-in` (`5d37a9e1e859`) manually re-triggered — the job that failed
+  at 21:38 on 08-19 with `RuntimeError: Connection error.` — and it **completed**
+  (11 API calls, `finish_reason=stop`). ⚠️ It took **~25 min** because DS4's
+  prompt cache was cold right after the reload, and it logged one client-side
+  `TimeoutError (attempt 1/3)` before succeeding on retry. At the real 21:35 slot
+  DS4 will have been warm all day, so this is a cold-cache artifact of the test,
+  not the job. Worth knowing that a manual trigger right after a router restart
+  is expensive and occupies DS4 for the duration.
 
 **⚠️ Pre-existing, NOT caused by this change, worth a look later:** DS4's child
 logs `W srv load_model: cache_reuse is not supported by this context, it will be

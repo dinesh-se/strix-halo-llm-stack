@@ -22,6 +22,99 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-20 (later 2) — Web survey against our config: one hypothesis REFUTED by test, prefill curve extended to 90k, three "do not do" answers
+
+**Observed:** User asked whether anything published would improve our setup.
+Surveyed upstream llama.cpp issues/PRs and the current Strix Halo guides against
+the live config. **Changed nothing** — this entry is findings.
+
+**🔴 My own hypothesis for the stream drops was WRONG, and the test says so.**
+llama.cpp [#18760](https://github.com/ggml-org/llama.cpp/issues/18760) reports
+that router mode's internal proxy ignores `--timeout` and uses a hardcoded
+read timeout (~300 s), producing `Failed to read connection` — which matches
+both our 08-15 cron error string and the 08-20 stream drops. Our router runs
+with **no `--timeout`**, so it looked like a direct hit.
+
+**MEASURED A/B, 90,000-token prompt, streamed, generous client timeout:**
+
+| leg | result |
+|---|---|
+| via ROUTER `:9292` | **OK — survived 648.7 s**, ttfb 30.3 s, 32 chunks |
+| direct to child | OK 1.0 s (prefix already cached by the router leg — not a clean control, and not needed) |
+
+**The router did NOT drop at 300 s, or at all.** The reason is
+`--sse-ping-interval` (default **30 s**, active): the first "chunk" at 30.3 s and
+most of the 32 chunks are SSE keepalive pings, which hold the connection open
+through a prefill that produces no tokens for ~11 minutes.
+- ⚠️ **Do not set `--sse-ping-interval -1`.** It is what makes long prefills
+  survivable on this box.
+- PR [#22003](https://github.com/ggml-org/llama.cpp/pull/22003) (merged 2026-04-21,
+  so it predates our 08-04 image) made `--timeout` work in router mode, and our
+  build's `--timeout` default is **3600 s**, not 300. Both consistent with the
+  observed pass.
+- **Conclusion: the stream drops are NOT a router proxy timeout.** Cause still
+  unknown; they run 1–6/day since at least 08-13 and are the real UX cost.
+
+**🟢 New measurement — the prefill decay curve, extended:**
+
+| prompt | prefill t/s |
+|---|---|
+| 2,053 | 256.7 |
+| 16,389 | 235.4 |
+| 19,605 | 225.6 |
+| **90,000** | **~139** (648.7 s wall) |
+
+**A cold 90k prefill costs ~11 minutes.** This is the single number that explains
+every "slow" report: one stream drop on a 100k conversation forces a full
+re-prefill, and Hermes retries 3×. It is prefill-time, exactly as
+`prefill_amplification_2026_08_02` concluded — nothing to do with throughput.
+
+**⚠️ Capacity note that follows from it:** DS4 runs `--parallel 3 --kv-unified`,
+so `n_ctx = 262144` is the TOTAL across all 3 slots, not per slot. Observed live
+conversations reach **118k tokens**. Two of those fill 90% of the unified KV; a
+third forces eviction and therefore a full ~11 min re-prefill on whichever
+conversation loses. DS4's KV is only ~4.5 MiB/1k tokens (so 262144 ≈ 1.2 GiB, and
+`n_ctx_train` is 1048576) — raising `ctx-size` is cheap in GPU terms. **Not
+actioned:** host RAM is the constraint, not GTT — MemAvailable is ~9 GiB and swap
+is 92% used with DS4 resident, which is the band that preceded the 07-19 and
+08-06 OOM kills. Measure before raising.
+
+**❌ Checked and REJECTED — do not apply these published recommendations:**
+1. **`RADV_PERFTEST=nogttspill`** — recommended by llm-tracker/strix-halo guides
+   as fixing "a bunch of performance issues". **Wrong for THIS box.** With the
+   BIOS UMA carveout at 512 MB, effectively all model memory *is* GTT; suppressing
+   GTT spill is backwards. Already removed here once (see `gtt_memory_model_2026_08_06`).
+   Confirmed the router container sets no RADV env vars at all — correct.
+2. **Re-enabling `--cache-ram`** — [#22629](https://github.com/ggml-org/llama.cpp/issues/22629)
+   is **closed as NOT PLANNED**. Linux overcommit means the limit still never
+   enforces (malloc never fails, so the `std::bad_alloc` eviction path never
+   runs). `-cram 0` stays. This closes the question rather than leaving it open.
+3. **ROCm/HIP builds** — the TinyComputers Strix Halo DS4 write-up reports
+   "1–2 t/s" on a HIP build. We measure **18.6 t/s** on radv. Nothing to take;
+   independently re-confirms the radv decision. Do not re-litigate.
+
+**🟡 Genuinely open / worth testing (none applied):**
+- **CPU governor.** Driver is `amd-pstate-epp`, governor **`powersave`**, EPP
+  `balance_performance`. The strix-halo-guide runs tuned's
+  `accelerator-performance` profile. Needs root, so untested here. Cheap and
+  reversible: `sudo cpupower frequency-set -g performance`, re-run the pp2053
+  bench (baseline **256.7 PP / 18.59 TG**), revert if flat. Expect little — decode
+  is GPU-bandwidth bound — but prefill has real CPU-side work.
+- **`cache-reuse = 256` on DS4 is INERT**, confirmed on every load:
+  `W srv load_model: cache_reuse is not supported by this context, it will be
+  disabled`. Same class as [#21468](https://github.com/ggml-org/llama.cpp/issues/21468)
+  (Gemma 4). MLA contexts do not support the KV-shifting reuse path. The setting
+  has been a no-op since 08-07; keep or drop, but stop believing it does anything.
+- **Context checkpoints** are ON by default in our build (`-ctxcp` 32/slot,
+  `-cms` 8192) and are the mechanism that could blunt re-prefill. ⚠️
+  [#24055](https://github.com/ggml-org/llama.cpp/issues/24055): checkpoints are
+  **always invalidated on hybrid/recurrent models** — that hits
+  `qwen3.8-27b-q4` (hybrid SSM, ~1 layer in 4 full-attention), NOT DS4.
+
+**Changed:** nothing.
+
+---
+
 ## 2026-08-20 (later) — "DS4 feels slow" — MEASURED, it is NOT. The cost is stream-drop re-prefill, not throughput
 
 **Observed:** User suspected DS4 was slower than when it was set up. Followed the

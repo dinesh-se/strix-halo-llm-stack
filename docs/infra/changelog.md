@@ -84,8 +84,40 @@ sane slot count.
   the KV buffer is `n_ctx` TOTAL, so `parallel` does **not** change KV size.
 - **Do not do it.**
 
-**Changed:** nothing yet — raising `[qwen3.8-27b-q4] parallel 1 → 2` is the
-obvious fix (costs ~0.25 GB, needs one router restart) but is the user's call.
+**Changed (APPLIED at the user's request, 11:01–11:04):**
+`~/llama-stack/config/models.ini` + repo template, inode-preserving
+(`12714493` before and after; `diff` clean between copies; backup
+`models.ini.bak-20260820-pre-qwen-np2`): **`[qwen3.8-27b-q4] parallel = 1 → 2`**,
+with the full rationale, the live proof and the 9,698-call measurement recorded
+in-file so it cannot be "tidied" back to 1. A comments-stripped diff confirms
+**exactly one effective line changed** and nothing in `[deepseek-v4-flash]` or
+`[gemma4-e4b]` moved. Then `daemon-reload` + one `restart llama-router`.
+
+**Smoke test — PASSED.**
+- Restart window was clean: **0 start attempts in the prior hour** (last restart
+  09:32, this one 11:01), so the `StartLimitBurst=3` budget was not at risk. DS4
+  confirmed idle on `/slots` (`is_processing: false` × 3, `requests_deferred 0`)
+  before restarting.
+- Router picked the change up — verified on the **preset argv the router will
+  spawn**, not the file: `--parallel 2`, with `--ctx-size 262144`,
+  `--spec-type draft-mtp`, `--spec-draft-n-max 5`, `--kv-unified` all unchanged.
+- Final lineup: `deepseek-v4-flash loaded np=3 ctx=262144` /
+  `gemma4-e4b loaded np=4 ctx=131072` / `qwen3.8-27b-q4 unloaded np=2 ctx=262144`.
+- DS4 cold-loaded in **~3.5 min** (11:01 → 11:04:34) and served a real completion
+  (`finish=stop`). All five services `active`, `NRestarts=0`, watchdog probes
+  green on both resident models, `heavy_coresident 0`, **no OOM / amdgpu events**.
+  MemAvailable 10.4 GiB.
+
+**⚠️ NOT yet verified behaviourally.** The argv proves qwen will now spawn with 2
+slots, and `pin_slot()` returning `max(ids)` then puts the probe on slot 1
+instead of slot 0 — which is the whole fix. But **the end-to-end proof (a
+multi-turn qwen conversation retaining its cache across a 60 s probe cycle) has
+not been run**, because it requires evicting DS4. Do it for free the next time
+qwen is loaded: send a turn, wait 75 s, send a follow-up, and confirm
+`prompt_tokens_details.cached_tokens` is high instead of 0.
+
+**🔴 The qwen verdict is now formally UNSETTLED** and should be re-taken on a
+real multi-turn workload at `parallel = 2` before the model is written off.
 
 **⚠️ Caveat stated honestly:** n=16 calls for the Q4 is a small sample. The
 mechanism is independently proven above, and the conversation-shaped call

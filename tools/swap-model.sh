@@ -2,11 +2,11 @@
 # swap-model.sh — manually swap the resident heavy model on the llama.cpp router.
 #
 # The router (:9292) hosts gemma4-e4b (always resident, fast aux) plus ONE of
-# the two heavy models — they CANNOT coexist (qwen3.6-35b 34 + ds4 98.4 + gemma
-# 4.9 = 137 GiB > 120 GB VRAM cap).
+# the heavy models — they CANNOT coexist (qwen3.8-27b-q4 34 + ds4 98.4 + gemma
+# 4.9 = 130 GiB > 120 GB VRAM cap).
 #
-#   qwen  -> daytime daily driver (complex tasks, planning, coding, web search)
-#   ds4   -> the OTHER model (heavy agentic / overnight work)
+#   qwen  -> the OTHER model (fast on-demand swap target, benchmark/coding)
+#   ds4   -> the primary resident heavy model (daily driver)
 #
 # Usage: swap-model.sh {ds4|qwen|status}
 #
@@ -23,8 +23,16 @@
 # model after an eviction we could not confirm.
 set -euo pipefail
 ROUTER="${ROUTER:-http://127.0.0.1:9292}"
-QWEN="qwen3.6-35b"
+QWEN="qwen3.8-27b-q4"          # preferred: UD-Q4_K_XL, 31-33 t/s, ~34 GiB
 DS4="deepseek-v4-flash"
+# 🔴 EVERY heavy model id, including retired/alternate quants. The `ds4` branch
+# evicts ALL of these, not just $QWEN. This list going stale is a REAL OOM path,
+# not a tidiness issue: on 2026-08-19 the script knew only `qwen3.8-27b` while
+# `qwen3.8-27b-q4` was resident, so `unload qwen3.8-27b` returned "already
+# unloaded", the CONFIRMED-eviction guard passed vacuously, and DS4 would have
+# loaded on top of a resident heavy model (98.4 + 34 + 4.9 > 124 GiB).
+# ⚠️ Keep in lockstep with HEAVY_MODELS in observability/stack/llama-watchdog/watchdog.env.
+HEAVY_OTHERS="qwen3.8-27b-q4"   # Q8_0 qwen3.8-27b deleted 2026-08-20 (section + GGUF)
 
 # Sets REPLY_CODE / REPLY_BODY. Never fails the script itself — callers decide.
 REPLY_CODE=""
@@ -163,16 +171,16 @@ load() {  # $1=id $2=label
 case "${1:-status}" in
   ds4)
     echo "Swapping to deepseek-v4-flash (heavy agentic / overnight work)..."
-    unload "$QWEN" "qwen3.6-35b" || exit 1
+    for m in $HEAVY_OTHERS; do unload "$m" "$m" || exit 1; done
     load "$DS4" "deepseek-v4-flash" || exit 1
     wait_loaded "$DS4" "deepseek-v4-flash" || exit 1
     echo; status
     ;;
   qwen)
-    echo "Swapping to qwen3.6-35b (daytime daily driver: coding/planning/web)..."
+    echo "Swapping to $QWEN (fast on-demand swap target: benchmark/coding)..."
     unload "$DS4" "deepseek-v4-flash" || exit 1
-    load "$QWEN" "qwen3.6-35b" || exit 1
-    wait_loaded "$QWEN" "qwen3.6-35b" || exit 1
+    load "$QWEN" "$QWEN" || exit 1
+    wait_loaded "$QWEN" "$QWEN" || exit 1
     echo; status
     ;;
   status)
@@ -180,8 +188,8 @@ case "${1:-status}" in
     ;;
   *)
     echo "Usage: swap-model.sh {ds4|qwen|status}"
-    echo "  ds4   -> load deepseek-v4-flash (evicts qwen3.6-35b)"
-    echo "  qwen  -> load qwen3.6-35b (evicts ds4)"
+    echo "  ds4   -> load deepseek-v4-flash (evicts ALL of: $HEAVY_OTHERS)"
+    echo "  qwen  -> load $QWEN (evicts ds4)"
     echo "  status -> show which heavy model is resident"
     exit 1
     ;;

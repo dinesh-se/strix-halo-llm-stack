@@ -22,6 +22,535 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-20 — qwen3.8-27b evaluation CLOSED: DS4 restored as daily driver, Q8_0 deleted, night cycle no longer swaps away
+
+**Observed:** User's verdict after a day of testing: "the speed is not that great
+to be a daily driver." The tuned `qwen3.8-27b-q4` does 31–33 t/s vs DS4's 19.48,
+but it runs `parallel = 1` with reasoning always on, so on real multi-caller work
+(Hermes + pi-kalam + Hindsight + OpenWebUI, all hitting one model) it loses to
+DS4's 3 unified slots. Request: DS4 back as the daily driver, Q4 retained as an
+on-demand model the user switches to by hand in Hermes, 256k context on both,
+gemma left alone.
+
+**Audit found four things that would have pulled the box back off DS4**, three of
+them silently:
+
+1. `~/.hermes/config.yaml` `model.default` and the provider-level `model` were
+   both still `qwen3.8-27b-q4` (set 08-19). Every cron with `model: null`
+   resolves to `model.default`.
+2. The `night-check-in` cron (21:35) was pinned to `qwen3.8-27b-q4`.
+3. 🔴 **`workers/overnight_tasks.py` called `swap_to_qwen()` at the end of the
+   night cycle.** `swap-model.sh`'s `QWEN` had been retargeted to
+   `qwen3.8-27b-q4` on 08-19, so **every night with pending tasks would have
+   ended by evicting DS4** and left the Q4 resident by morning — against the pins
+   in (1) and (2). This was the one that would not have announced itself.
+4. `watchdog.env` `HEAVY_MODELS` and `swap-model.sh` `HEAVY_OTHERS` both still
+   listed the Q8_0 id being deleted.
+
+**Answering the user's question — no, the workflow files were NOT changed on
+2026-08-19.** `~/Dev/automated-workflows` has no commits after `2a83c52`
+(08-18) and a clean tree apart from a long-standing untracked
+`workers/run_night_checkin.py` (mtime 08-17). The only Hermes skill touched on
+08-19 was `productivity/google-tasks-scheduling/SKILL.md` at 08:53, hours before
+the model work and unrelated to it. The workflow files were nonetheless in scope
+because of finding (3): they were correct on 08-18 and were invalidated by a
+change made *elsewhere* on 08-19.
+
+**Changed:**
+- `models.ini` (BOTH copies, runtime edited INODE-PRESERVING then copied to the
+  repo template; `diff` clean after): deleted the `[qwen3.8-27b]` Q8_0 section
+  and folded its MTP / `spec-draft-n-max` documentation into
+  `[qwen3.8-27b-q4]`, which is now the only on-demand target. Fixed the stale
+  header bind-mount path (`/models/qwen` → `/models/qwen38`) and restated the DS4
+  comment block as the daily driver. **No setting changed** — DS4 `ctx-size =
+  262144` / `load-on-startup = true`, Q4 `ctx-size = 262144` /
+  `load-on-startup = false`, gemma 131072 were all already correct.
+- `~/.hermes/config.yaml` (backup `config.yaml.bak-20260820-pre-ds4-restore`):
+  `model.default` and provider `model` → `deepseek-v4-flash`; `qwen3.8-27b`
+  dropped from the selectable models list. Edited as YAML directly, not via
+  `hermes config set` (that CLI has mangled this file twice).
+- `hermes cron edit 5d37a9e1e859 --model deepseek-v4-flash` — `night-check-in`
+  back on DS4. Both check-ins are now DS4; no cron pins an unloadable model.
+- `watchdog.env`: `HEAVY_MODELS` → `qwen3.8-27b-q4,deepseek-v4-flash`.
+  `tools/swap-model.sh`: `HEAVY_OTHERS` → `qwen3.8-27b-q4`. Kept in lockstep, as
+  the in-file comment demands.
+- `~/Dev/automated-workflows` (branch `chore/night-cycle-stays-on-ds4`, commit
+  `7c0906e`, **not pushed**): `_swap_back_to_qwen`/`_restore_qwen_best_effort` →
+  a single `_no_swap_back`; `swap_to_qwen()` and `QWEN_35B` deleted from
+  `overnight_swap.py`. Tests now build their swap mocks with
+  `MagicMock(spec=OvernightSwapHandler)`, so **a reintroduced swap-back raises
+  AttributeError instead of passing silently**, and assert the cycle's only swap
+  call is `swap_to_deepseek()`.
+- `~/.hermes/skills/automation/night-cycle-{tasks,automation}/SKILL.md`: the
+  stale `qwen3.6-35b`-as-daytime-model prose (flagged as "user's call" on 08-19)
+  is now correct.
+- Deleted `Qwen3.8-27B-Q8_0.gguf` (29,047,086,048 bytes) after confirming no
+  process held it and the Q4 was intact. **Disk 854 → 881 GB free.**
+
+**Expected:** DS4 resident at all times; nothing unattended can name a model that
+is not loaded; the Q4 reachable only by a deliberate `swap-model.sh qwen` or an
+in-session Hermes switch; 262144 context on both heavy models.
+
+**Refs:** the 2026-08-19 21:37 OOM entry below — its "🔴 STILL ARMED — recurs
+2026-08-20 21:35" warning is what this entry closes. The root-cause fix is not
+just repointing the cron: it is that **only one heavy model is ever wanted by an
+unattended caller now**, so the cron-vs-user contention that the mutex cannot
+guard has no way to arise on its own.
+
+**Smoke test — PASSED, all of it on the running system.**
+- Watchdog verified on the RUNNING PROCESS, not the unit file:
+  `/proc/489169/environ` → `HEAVY_MODELS=qwen3.8-27b-q4,deepseek-v4-flash`, and
+  `:9611` confirmed owned by MainPID (no env-less orphan, the 08-01 failure mode).
+- Restart discipline: DS4's `/slots` showed a live 118k-token prefill from a
+  Telegram Hermes session, so the restart was HELD until that session completed
+  and all three slots read `is_processing: false`. **One** restart total, well
+  inside the `StartLimitBurst=3`/hour budget (0 prior attempts in the window).
+- `daemon-reload && restart llama-router` → gemma4-e4b serving in seconds
+  (ordering intent held), DS4 cold-loaded in **~3.5 min**. `NRestarts=0`.
+- **Router registers exactly 3 ids**; the Q8_0 is gone. Verified from CHILD ARGV,
+  not the file (gotcha #11):
+  ```
+  deepseek-v4-flash  loaded    ctx=262144 np=3
+  gemma4-e4b         loaded    ctx=131072 np=4 spec=draft-mtp n_max=4
+  qwen3.8-27b-q4     unloaded  ctx=262144 np=1 spec=draft-mtp n_max=5
+  ```
+- Effective-settings diff of `models.ini` old vs new (comments stripped) is
+  **exactly the removed `[qwen3.8-27b]` block and nothing else** — no DS4, gemma
+  or Q4 setting was touched. Runtime inode preserved (`12714493` before and
+  after); repo template `diff`-clean against it.
+- Real completions both ways: DS4 → `"DS4 daily driver online"`, `finish=stop`;
+  Q4 → `"Q4 on demand online"`, `finish=stop`, `reasoning_content` populated
+  (native xhigh reasoning intact).
+- **Both swap directions exercised** — this is the path whose `HEAVY_OTHERS`
+  staleness was the 08-19 latent OOM: `swap qwen` **18 s** (DS4 CONFIRMED
+  unloaded before the Q4 loaded), `swap ds4` **3 min 9 s**. `heavy_evictions_total
+  0` and `heavy_coresident 0` throughout — the mutex correctly did NOT fire on
+  clean swaps, matching the 08-07 finding that it only triggers on genuine
+  co-residency.
+- `journalctl -k`: **no OOM, no amdgpu error/timeout/reset** across the window.
+  All five user services `active`, `NRestarts=0`. Watchdog probes green on both
+  resident models.
+- Consumers: `hermes config get model.default` → `deepseek-v4-flash`; both
+  check-in crons pinned to DS4; the other 8 jobs are script-mode or resolve to
+  `model.default`, so **no unattended caller can name an unloaded model.**
+- Workflows: **641 tests pass** in `~/Dev/automated-workflows` (the one
+  collection error, `e2e/test_full_briefing.py` → `daily_briefing.main`, is
+  PRE-EXISTING and untouched by this change). Orchestrator dry-run confirms both
+  branches: empty pending → zero swap calls; one task → `[call.swap_to_deepseek()]`
+  and nothing else.
+- Disk: 854 → **881 GB free** after deleting the Q8_0 GGUF; the Q4 still resolves
+  inside the container and served a live completion afterwards.
+
+**⚠️ Pre-existing, NOT caused by this change, worth a look later:** DS4's child
+logs `W srv load_model: cache_reuse is not supported by this context, it will be
+disabled` on every load. `cache-reuse = 256` has been in the DS4 preset since
+08-07 and is therefore INERT. Not investigated here — it changes nothing about
+this change, but the setting is not doing what the config implies.
+
+---
+
+## 2026-08-19 — Wire qwen3.8-27b as the on-demand swap target (fix stale container mount + heavy-mutex blind spot)
+
+**Observed:** User reported qwen3.8-27b "wasn't wired properly". The router
+listed the id but `/models` showed `qwen3.8-27b unloaded failed=true`. Router
+log gave the exact cause:
+
+```
+[35777] E gguf_init_from_file: failed to open GGUF file
+        '/models/qwen38/Qwen3.8-27B-Q8_0.gguf' (No such file or directory)
+[35777] E srv load_model: failed to load model
+1176.18 I srv operator(): instance name=qwen3.8-27b exited with status 1
+```
+
+**The config files were all already correct.** `models.ini` (both copies —
+`diff` clean), the unit's mount line, `~/.hermes/config.yaml`
+`custom_providers`, and `swap-model.sh` all named qwen3.8-27b. What was wrong
+was the RUNNING CONTAINER: `systemctl --user show` reported
+`NeedDaemonReload=yes`, and `docker inspect` showed the live mount set still
+carried the PREVIOUS generation —
+
+```
+/home/dinesh-se/llama-stack/hf-cache-archive/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF -> /models/qwen
+```
+
+— i.e. the 08-18 unit edit that swapped `/models/qwen` → `/models/qwen38` was
+never `daemon-reload`ed or restarted, so the container had a mount for the
+RETIRED 35b and none for the new 27b. `models.ini` itself was fine and in sync
+(same inode inside and out, container `sed` confirmed it saw the
+`[qwen3.8-27b]` section) — this was purely the unit half of the edit going
+inert. **Textbook `llama_server_router_mode` landmine: unit edits do nothing
+until `daemon-reload && restart`.**
+
+**Second, independent gap (safety, would not have surfaced as an error):**
+`llama-watchdog`'s `HEAVY_MODELS` still defaulted to
+`"qwen3.6-35b,deepseek-v4-flash"` (`watchdog.py:133`), and `watchdog.env` did
+not override it. qwen3.6-35b was removed from all configs on 08-17, so the
+heavy-model mutex was tracking a model that no longer exists and **did not
+recognise qwen3.8-27b as heavy at all.** An on-demand load of qwen3.8-27b on
+top of resident DS4 (27 + 98.4 + 4.9 + KV > 124 GiB) would have been completely
+unguarded — the exact 2026-08-07 OOM path, which on this box reaps the GNOME
+session rather than the model.
+
+**Changed:**
+- `~/observability/stack/llama-watchdog/watchdog.env`: added
+  `HEAVY_MODELS=qwen3.8-27b,deepseek-v4-flash` + rationale comment. Restarted
+  watchdog. **Done FIRST, before the router restart**, so the mutex was armed
+  before qwen3.8-27b became loadable at all.
+  Backup: `watchdog.env.bak-20260819-pre-qwen38`.
+- `systemctl --user daemon-reload && systemctl --user restart llama-router.service`
+  — the actual fix. No file edit was needed; the unit was already correct.
+- `tools/swap-model.sh:166`: display label `qwen3.6-35b` → `qwen3.8-27b` in the
+  `ds4` branch. Cosmetic only — `$QWEN` was already correct, so behaviour was
+  never affected.
+
+**Expected:** `/models/qwen38/Qwen3.8-27B-Q8_0.gguf` resolves inside the
+container; qwen3.8-27b loads on demand via `swap-model.sh qwen` or by being
+named in a Hermes request; the heavy mutex evicts DS4 rather than allowing
+co-residency.
+
+**Refs:** GGUF metadata read directly from the file — `general.architecture =
+qwen35`, `block_count 65`, `full_attention_interval 4` (hybrid SSM/attention:
+only ~16 of 65 layers carry a KV cache), `head_count_kv 4`, `key/value_length
+256`, `context_length 262144`, `nextn_predict_layers 1`.
+
+**Smoke test — PASSED.**
+- Integrity: `sha256sum` = `a680f44a…b67e348`, matches the HF
+  `.metadata` etag exactly. 29,047,086,048 bytes, GGUF v3, 866 tensors. Not a
+  truncated download.
+- Mount: `docker exec llama-router ls /models/qwen38/` now lists the GGUF; the
+  stale `/models/qwen` is gone. `NeedDaemonReload=no`.
+- Watchdog verified **on the running process, not the file**:
+  `/proc/3612341/environ` → `HEAVY_MODELS=qwen3.8-27b,deepseek-v4-flash`, and
+  `:9611` confirmed owned by MainPID (no orphan holding the port).
+- Router restart: gemma4-e4b serving within seconds, DS4 cold-loaded in **~4
+  min** (20:19 → 20:23). Ordering intent in models.ini held.
+- `swap-model.sh qwen`: DS4 evicted and CONFIRMED unloaded before the load —
+  **23 s end to end**, no co-residency window.
+- Real completion through the Hermes path
+  (`POST /v1/chat/completions`, model=qwen3.8-27b): correct answer to a
+  non-trivial probability question (13/28), `finish_reason=stop`,
+  `reasoning_content` populated. Default xhigh reasoning left intact as
+  intended.
+- **Memory footprint MEASURED (not estimated — `ssm.*` hybrids break the
+  estimator ~4×): GTT 41.5 GiB with qwen3.8-27b + gemma4-e4b resident,
+  MemAvailable 77.3 GiB.** So qwen3.8-27b ≈ **36.6 GiB** at the full 262144
+  ctx. Very comfortable; the hybrid architecture keeps KV small (~9 GiB at
+  262k) because only ~1 layer in 4 is full-attention.
+- **Throughput MEASURED, warm, pp3393: 265.19 t/s prefill / 7.78 t/s decode.**
+  Decode was identical (7.78) on both the cold and warm runs — stable, and
+  quant-bound rather than misconfigured: 27 GiB of Q8_0 weights read per token
+  against ~256 GB/s of bandwidth puts the roofline near 9.5 t/s, so we are at
+  ~82% of it.
+- Metrics relay picked the model up (`llamacpp:*{model="qwen3.8-27b"}`),
+  watchdog probe green (`probe_success=1`, `consecutive_failures=0`).
+- `heavy_evictions_total 0`, `heavy_coresident 0` for the whole window — the
+  clean swap correctly did NOT trip the mutex, matching the 08-07 finding that
+  it only fires on genuine co-residency.
+- `journalctl -k`: **no OOM, no amdgpu error/timeout/reset** across the window.
+- Swapped back toward DS4, then **the user asked mid-run not to restore**, so
+  the swap-back was aborted and `swap-model.sh qwen` re-run. Both directions of
+  the swap are therefore now exercised, including an abort mid-load with no ill
+  effect.
+
+**END STATE (deliberate, differs from the previous steady state):**
+**qwen3.8-27b + gemma4-e4b resident; deepseek-v4-flash UNLOADED.** GTT 41.5 GiB,
+MemAvailable 77.5 GiB.
+
+**🔴 Consequence the user must be aware of:** `~/.hermes/config.yaml`
+`model.default` is still `deepseek-v4-flash`, and the **`night-check-in` cron
+(`35 21 * * *`) is pinned to DS4** (pinned on 08-15 precisely so it would stop
+resolving to an evicted model). At 21:35 it will name DS4, the router will
+autoload it, and the heavy mutex will **evict qwen3.8-27b** — a 3–11 min load,
+unattended. This is correct, designed behaviour, not a fault, but it means the
+qwen residency chosen here will NOT survive the night unless one of these is
+changed: repoint `model.default` and/or the night-check-in cron to
+qwen3.8-27b, or accept the eviction. Not actioned — the user's call.
+
+**🔴 Open finding — Q8_0 is the wrong quant for this role, NOT a bug.** At 7.78
+t/s decode, qwen3.8-27b generates **2.5× SLOWER than the 98 GiB DS4** (19.48
+t/s), because DS4 is an MoE with few active params per token while this 27b
+reads all 27 GiB every token. It is billed in `models.ini` as the "fast
+on-demand swap target: benchmark/coding" and it is currently the opposite of
+fast. It only uses 36.6 of ~124 GiB, so the headroom is being spent on
+precision nobody asked for. Levers, cheapest first:
+1. **Re-download at Q4_K_XL or Q6_K** (~16–22 GiB) → roughly 12–16 t/s
+   expected. The 07-31 precedent (`project_27b_q8_parked`) already settled on
+   Q6_K for the previous 27b.
+2. **MTP speculative decoding** — the GGUF carries
+   `qwen35.nextn_predict_layers = 1`, so an MTP sidecar in the unsloth repo
+   would enable the same `spec-type = draft-mtp` path gemma4-e4b uses. Not
+   checked yet.
+3. `ubatch-size` is at 512 per the "tune during bench" note; prefill already
+   measures 265 t/s, so this is the least valuable lever.
+Not actioned — quant choice is the user's call.
+
+**Housekeeping — ✅ DONE 2026-08-19** (deleted at user request): the 08-18
+download left **43.92 GB of abandoned `.incomplete` partials** in
+`hf-cache/hub/models--unsloth--Qwen3.8-27B-GGUF/.cache/huggingface/download/`
+(19.9 + 12.6 + 11.4 GB), all fragments of the Q8_0 whose final file is complete
+and sha-verified. Deleted with `find … -name '*.incomplete' -type f -delete`
+after confirming no process held them (`fuser`) and no download was running.
+**Disk 813 GB → 854 GB free.** Both real GGUFs verified byte-exact afterwards
+and the container still resolves them; `qwen3.8-27b-q4` served a live completion
+post-delete.
+
+**Also not actioned:** `~/.pi/agent/models.json` does NOT list qwen3.8-27b (only
+DS4 + gemma). The request was scoped to Hermes; pi cannot select the model
+until an entry is added there.
+
+---
+
+### Follow-up the same session — MTP speculative decoding: 7.78 → 17.7 t/s (2.3×)
+
+**Observed:** User asked whether the speed could be raised, and what other Strix
+Halo owners get. The 7.78 t/s baseline turned out to be **exactly the
+memory-bandwidth roofline, not a misconfiguration**: 29 GB of Q8_0 weights read
+per token against ~220–256 GB/s of LPDDR5X puts the ceiling near 7.9–9.5 t/s.
+No llama.cpp flag can beat that, because decode at batch 1 is bytes-per-token
+bound. Only two things can: **read fewer bytes** (smaller quant) or **emit more
+tokens per forward pass** (speculation).
+
+**The find:** `qwen35.nextn_predict_layers = 1` in the GGUF metadata, and a
+direct tensor-table dump showed the MTP layer is **EMBEDDED in the main file** —
+`blk.64.nextn.{eh_proj,enorm,hnorm,shared_head_norm}`. So `spec-type =
+draft-mtp` works with **no `model-draft` sidecar at all**, unlike gemma4-e4b
+which needs an explicit MTP file. This was free performance sitting unused.
+
+**Changed** (`models.ini`, BOTH copies, edited in place to preserve the inode):
+```
+[qwen3.8-27b]
+spec-type = draft-mtp,ngram-mod
+spec-draft-n-max = 12
+spec-ngram-mod-n-min = 24
+```
+then `systemctl --user restart llama-router` + `swap-model.sh qwen`.
+
+**MEASURED — clean A/B, two standalone containers identical except for the spec
+flags, greedy (`temperature 0`, `top_k 1`) so the token sequence matches:**
+
+| config | decode t/s | acceptance | mean len |
+|---|---|---|---|
+| spec off | **7.78, 7.78** (dead stable) | — | — |
+| `draft-mtp` n12 | **17.69 – 19.67** | 0.36–0.41 | 5.3–5.9 |
+| `draft-mtp,ngram-mod` first-exposure | **17.67** | 0.35 | 5.38 |
+| `draft-mtp,ngram-mod` REPEATED prompt | 67.71 ⚠️ artifact | 0.79 | 28.29 |
+
+**Verified live in production through `:9292`: 17.69 t/s**, child argv carries
+`--spec-type draft-mtp,ngram-mod`, and the child logs `common_speculative_init_result:
+creating MTP draft context against the target model`. GTT 41.5 → **45.5 GiB**
+(the MTP draft context costs ~4 GiB). **2.27× for one config line and ~4 GiB.**
+
+⚠️ **Two measurement traps hit and worth remembering:**
+1. **`speculative.n_max` in the REQUEST BODY is silently ignored.** An n_max
+   sweep via the JSON body produced 13.5–18.4 t/s and looked like a real curve;
+   it was pure run-to-run variance, proven because mean len stayed at 5.53 when
+   n_max was supposedly 4. Draft length can only be set as a server flag.
+   **`spec-draft-n-max` is therefore still UNTUNED at 12.**
+2. **The headline "warm" numbers in public write-ups are a repetition
+   artifact.** Re-sending an identical prompt let ngram-mod replay its own prior
+   output at acceptance 0.79 / mean len 28.3 for 67.71 t/s. The KyaniteLabs
+   authors say so themselves ("the label is part of the number"). ngram-mod is
+   kept because it is free and genuinely helps repetitive code edits, but it
+   adds ~nothing (17.67 vs 18.7) on first-exposure text.
+
+**Refs — what other Strix Halo owners measure on this exact model:**
+- [KyaniteLabs/qwen38-27b-strix-halo](https://github.com/KyaniteLabs/qwen38-27b-strix-halo):
+  champion config is **UD-Q4_K_XL** + `draft-mtp,ngram-mod` n12 — honest real-traffic
+  numbers **prose 11–24 t/s, code 30–40 t/s**. Also reports KV `q4_0` saves ~47%
+  vs `q8_0`, and that `GGML_HIP_ROCWMMA_FATTN=ON` costs −41% prefill on gfx1151.
+- [julianmb/q38rocm](https://github.com/julianmb/q38rocm): **Q4_K_M baseline 12.27 t/s**,
+  ROCmFP4 (13.55 GB) 14.02 t/s unassisted, **36.04 t/s** with MTP — and
+  explicitly **Vulkan/RADV 34.8–36.0 vs ROCm 18.5**, which independently
+  CONFIRMS our long-standing radv-over-ROCm decision. (Note this directly
+  contradicts KyaniteLabs' claim that Vulkan spec-decode is half of ROCm; we are
+  on radv and measuring well, so treat the KyaniteLabs Vulkan claim as not
+  applicable to this build.)
+- Their Q4_K_M 12.27 t/s vs our Q8_0 7.78 t/s scales almost exactly by the
+  weight-size ratio (29.0/16.5 × 7.78 = 13.7). **The roofline model is
+  confirmed by an independent third party.**
+
+**🔴 The remaining lever is the QUANT, and it is the big one.** We are on Q8_0
+(29 GB) purely because that is what got downloaded. `unsloth/Qwen3.8-27B-GGUF`
+also ships **UD-Q4_K_XL**, **UD-Q5_K_M**, **UD-Q6_K**, and a **Q4_0 MTP**
+variant. Dropping to UD-Q4_K_XL (~16 GB) should roughly double decode again on
+top of MTP — **projected ~30–36 t/s, matching both third-party reports** — while
+also freeing ~13 GiB. That is a ~4× total gain over where this started. Not
+actioned: it is a fresh ~16 GB download and the quant/quality trade-off is the
+user's call. A second free lever remains: KV `q4_0` instead of `q8_0` (~47% KV
+saving, reported harmless on this model).
+
+## 2026-08-19 (final) — Make the Q4 the default everywhere; fix a latent OOM in swap-model.sh
+
+**Observed:** User asked for "the best performed version for testing", i.e.
+`qwen3.8-27b-q4` should be what they land on by default. Auditing for anything
+that could pull them off it surfaced a **latent OOM bug**.
+
+**🔴 `swap-model.sh ds4` would have OOM'd the box at 23:00 tonight.** The script
+hardcoded `QWEN="qwen3.8-27b"` and evicted only that id. With the **Q4** resident
+(`qwen3.8-27b-q4`), `unload qwen3.8-27b` returns "✓ already unloaded", so the
+CONFIRMED-eviction guard — the entire reason every failure path in that script is
+fatal — **passes vacuously**, and DS4 then loads on top of a resident heavy model
+(98.4 + 34 + 4.9 = 137 GiB > 124 GiB cap). This was live: the
+`night-cycle-tasks` skill runs `swap-model.sh ds4` at 23:00 via the
+`overnight-tasks` cron.
+
+**Changed:**
+- `tools/swap-model.sh`: added `HEAVY_OTHERS="qwen3.8-27b-q4 qwen3.8-27b"`; the
+  `ds4` branch now evicts **every** id in that list, not just `$QWEN`. `QWEN`
+  retargeted to `qwen3.8-27b-q4`. Labels de-hardcoded. **Keep `HEAVY_OTHERS` in
+  lockstep with `HEAVY_MODELS` in `watchdog.env`** — a stale list here is an OOM
+  path, not cosmetics.
+- `~/.hermes/config.yaml`: `model.default` → **`qwen3.8-27b-q4`**;
+  provider-level `model` → same; **`qwen3.8-27b` (Q8_0) REMOVED from the
+  selectable models list** so the slow variant cannot be picked by accident (it
+  is still defined in `models.ini` and reachable by id for quality A/B).
+  Backup: `config.yaml.bak-20260819-pre-default-q4`.
+- `hermes cron edit 5d37a9e1e859 --model qwen3.8-27b-q4 --provider custom:local-models`
+  — the `night-check-in` job (21:35) that caused the 21:37 OOM is no longer
+  pinned to DS4. **This is the root-cause fix for that incident.**
+
+**⚠️ Not changed, user's call:**
+- The `overnight-tasks` cron (23:00) still swaps to DS4 by design — that is the
+  intended overnight-heavy-work workflow. It WILL evict the Q4. The skill says
+  it skips the swap entirely when there are no pending tasks. Safe now that
+  swap-model.sh evicts correctly, but it does take the test model away.
+- `~/.hermes/skills/automation/night-cycle-*/SKILL.md` still describe the
+  retired **`qwen3.6-35b`** as the daytime model. Stale prose, not executable
+  config, but it will mislead an agent reading it.
+- `~/.pi/agent/models.json` still has no qwen3.8 entry of either quant.
+
+**Smoke test:** `swap-model.sh` syntax OK (`bash -n`), `status` prints the true
+4-model state. Q4 loaded and served a correct completion. Config verified by
+re-reading the file. ⚠️ The user's LIVE Hermes session has `qwen3.8-27b` pinned
+in session state and keeps reloading the Q8 — config changes do not retroactively
+move a running session; a new session (or an in-session switch) is required.
+
+## 2026-08-19 21:37 — 🔴 OOM INCIDENT: cron-vs-user heavy-model thrash killed the router
+
+**Observed:** User switched their Hermes session to `qwen3.8-27b` at ~21:36. The
+router was OOM-killed at **21:37:50** (`status=137`) and their request hung with
+no response.
+
+```
+21:36:01 HEAVY-MUTEX: 2 heavy models resident
+         (deepseek-v4-flash=loading, qwen3.8-27b=loaded) — evicting qwen3.8-27b
+21:36:01 HEAVY-MUTEX: unload qwen3.8-27b ok
+21:37:47 instance name=gemma4-e4b exited with status 1
+21:37:50 kernel: Out of memory: Killed process 3723237 (llama-server)
+         total-vm:41462744kB anon-rss:75304kB   <- GTT invisible to OOM killer, as always
+21:37:51 llama-router.service: Main process exited, code=exited, status=137
+```
+
+**Root cause — a THRASH between two independent callers, not a single bad load.**
+The 21:35 `night-check-in` cron is pinned to `deepseek-v4-flash` (pinned there on
+08-15 for good reasons) and **retries 3×**. Each retry asked the router for DS4
+(~98.4 GiB); meanwhile the user's Hermes session kept asking for qwen3.8-27b
+(Q8_0, ~45 GiB). The mutex evicted qwen correctly, the cron retried, the user's
+session reloaded qwen, and the two heavy loads overlapped in flight until host
+RAM was exhausted. Cron log confirms the retry storm:
+`API call failed (attempt 2/3, 3/3) ... model=deepseek-v4-flash` →
+`Job 'night-check-in' failed: RuntimeError: Connection error.`
+
+**🔴 The lesson the mutex does NOT cover:** the heavy-model mutex is a
+*point-in-time* guard — it evicts when it SEES two heavy models resident. It
+cannot stop two independent callers from each re-triggering a load faster than
+it can evict. **Co-residency protection ≠ contention protection.** The real fix
+is to stop two callers wanting different heavy models at the same time.
+
+**Blast radius — contained, better than 2026-08-06.** `--oom-score-adj=1000` did
+its job: the kernel took llama-server, NOT the desktop. gnome-shell and wezterm
+survived; all five user services came back on `Restart=on-failure` with
+`NRestarts=1`. MemAvailable recovered to 111.9 GiB.
+
+**Changed (before the incident, and it turned out to matter):**
+- `watchdog.env`: `HEAVY_MODELS` → `qwen3.8-27b,qwen3.8-27b-q4,deepseek-v4-flash`.
+  **`qwen3.8-27b-q4` had been missing** — the new preferred model was NOT
+  recognised as heavy at all, so the mutex would not have fired for it. Verified
+  on `/proc/<MainPID>/environ`; `:9611` owned by MainPID.
+- `~/.hermes/config.yaml`: added `qwen3.8-27b-q4` to
+  `custom_providers[Local Models].models` — it was missing, which is why the user
+  landed on the SLOW Q8_0 (21 t/s) instead of the Q4 (31–33 t/s).
+  Backup: `config.yaml.bak-20260819-pre-q4`.
+
+**Recovery:** unloaded the in-flight DS4, loaded `qwen3.8-27b-q4`, verified a
+real completion (`finish=stop`, correct answer). GTT 34.3 GiB, MemAvailable
+84.1 GiB. Router `active`, all services `active`.
+
+**🔴 STILL ARMED — recurs 2026-08-20 21:35.** The `night-check-in` cron is
+unchanged and still pinned to `deepseek-v4-flash`. If any heavy model other than
+DS4 is resident at 21:35 tomorrow, this repeats. Options, none applied (user's
+call): repoint the cron to `qwen3.8-27b-q4` or `gemma4-e4b`; or change
+`model.default`; or give the cron a single-attempt/no-retry policy so it cannot
+storm. **Whatever is chosen, the principle from gotcha #6 stands: every
+unattended caller must be pinned to a model that is actually resident.**
+
+## 2026-08-19 (later) — Q4_K_XL A/B + `spec-draft-n-max` tuning: 7.78 → 31–33 t/s (4.2×)
+
+**Observed:** Projected UD-Q4_K_XL at ~27–29 t/s from the roofline model. The
+first A/B **refuted that**: at the then-current `spec-draft-n-max = 12`, Q4
+measured 17.59 vs Q8's 16.89 — no gain at all. The control run explained why.
+
+**MEASURED (greedy, code prompt, identical containers):**
+
+| | spec off | MTP n=12 | **MTP n=5 (tuned)** |
+|---|---|---|---|
+| Q8_0 (29.05 GB) | 7.78 | ~17.7 | **21.3–21.9** |
+| UD-Q4_K_XL (17.56 GB) | **12.39** | 19.03 | **31.0** |
+
+The roofline model was CORRECT — Q4 spec-off came in at 12.37/12.41 vs ~11.6
+predicted. What was wrong was the assumption that the MTP multiplier is constant:
+it is **2.2× on Q8 but only 1.4× on Q4**, because the batched verify pass is
+compute-bound, so cheaper weights stop helping once speculation is on.
+
+**🔴 The real lever was `spec-draft-n-max`, not the quant.** Sweep on Q4:
+`n=3 29.47 | n=5 31.05 | n=6 30.21 | n=7 27.24 | n=12 19.03 | n=20 15.16`.
+Long drafts collapse acceptance (0.81 at n=3 → 0.25 at n=20) and waste the
+verify pass. The inherited `n=12` was costing **~1.6×**. On Q8: `n=3 21.34 |
+n=6 21.86 | n=8 21.73 | n=12 ~17.7`.
+
+**Changed** (`models.ini`, both copies, inode-preserving):
+- new `[qwen3.8-27b-q4]` → `/models/qwen38/Qwen3.8-27B-UD-Q4_K_XL.gguf`. Same HF
+  repo dir, so the existing `/models/qwen38` mount covers it — **no unit change**.
+- BOTH qwen entries: `spec-draft-n-max 12 → 5`, and **`ngram-mod` REMOVED** —
+  measured a ~4% net LOSS on first-exposure text (28.95/24.89 with vs
+  30.21/26.55 without). Its only gain is replaying its own prior output.
+
+**PRODUCTION, verified on the running child (`--spec-type draft-mtp`,
+`--spec-draft-n-max 5`): 31.32 / 32.57 t/s.** GTT **34.2 GiB** (vs 45.4 on Q8) —
+Q4 is both **~1.45× faster and ~11 GiB smaller**. Integrity: sha256
+`3f227079…bc8b01e` matches HF.
+
+**Checked the published "best" configs and OURS WINS — do not copy them:**
+
+| config | t/s |
+|---|---|
+| **ours** | **31.32 / 32.57** |
+| published KV `q4_0` + `--threads 16` + `-fit off`, our n=5 | 29.00 / 27.35 |
+| KyaniteLabs champion verbatim (n12 + ngram + KV q4_0 + t16 + fit off) | 17.83 / 14.80 |
+
+So KV `q4_0` and `--threads 16` are both mild NEGATIVES here, and their `n=12`
++ ngram is catastrophic on this build. **`spec-draft-n-max` is
+hardware/build-specific — measure it, never inherit it.**
+
+**Net: 7.78 → 31–33 t/s, 4.2× over where the day started**, of which the quant
+contributed ~1.45× and draft-length tuning ~1.6×.
+
+**⚠️ Operational hazard hit:** `systemctl --user restart llama-router` **four
+times in one hour tripped the unit's own `StartLimitBurst=3` /
+`StartLimitIntervalSec=3600`**, and the router stayed DOWN — systemd counts
+start ATTEMPTS, not just failures. It presents as
+`Job for llama-router.service failed because start of the service was attempted
+too often`, which reads like a config error and is not. Recovery is
+`systemctl --user reset-failed llama-router.service && systemctl --user start …`.
+**Budget 3 router restarts per hour** when tuning; do the exploration in a
+standalone container on another port (as was done here) and restart production
+only once at the end.
+
+**End state:** `qwen3.8-27b-q4` + `gemma4-e4b` resident, DS4 unloaded. GTT 34.2
+GiB, MemAvailable 84.5 GiB. No OOM, all five user services active. The Q8_0
+entry is retained as `qwen3.8-27b` for comparison; it can be deleted along with
+its 29 GB GGUF once Q4 output quality is judged acceptable.
+
 ## 2026-08-17 — Remove qwen3.6-35b from configs; raise DS4 context to 262144 (3-way sync)
 **Observed:** User flagged that the router reported 3 models (`deepseek-v4-flash`, `gemma4-e4b`, `qwen3.6-35b`) when the expected lineup is only 2 (DS4 + gemma). The configs genuinely still carried qwen3.6-35b despite the 08-15 "pause" — it remained registered in all three config files and loaded at startup. Separately, DS4 context was being raised 131072 → 262144 (memory-safe: DS4 KV ~4.5 MiB/1k tokens, +~590 MiB for the extra 131k; peak ~103.3 GiB with gemma, well under the ~120 GiB cap).
 **Changed:**

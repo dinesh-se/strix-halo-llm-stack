@@ -1,6 +1,9 @@
 # AI Infra — Current State
 
-> **Last verified:** 2026-08-17 (by Hermes, from live system — router `:9292` health, `/v1/models` state: ds4 + gemma resident only; qwen3.6-35b REMOVED from all configs 2026-08-17)
+> **Last verified:** 2026-08-20 (from live system — router `:9292` after a clean
+> restart, `docker inspect` mounts, child argv, cron pins, and the running
+> watchdog process. **qwen3.8-27b evaluation CLOSED: DS4 is the daily driver
+> again, qwen3.8-27b-q4 is on-demand only, and the Q8_0 twin is deleted.**)
 > This is the living snapshot. Read this before any infra change. Ground truth
 > is the config files themselves; if this file disagrees with them, trust the
 > config files and fix this file (and log it in `changelog.md`).
@@ -13,10 +16,10 @@
 ## Router / serving
 
 - **Service:** `llama-router.service` (systemd user unit) — llama.cpp's **native router server** on **:9292**. llama-swap is **retired** (config moved to `models.ini`).
-- **Unit:** `~/.config/systemd/user/llama-router.service` — docker `llama-router` container, image `kyuz0/amd-strix-halo-toolboxes@sha256:ca4c4c…a0211`, `--oom-score-adj=1000`, `--models-preset /models.ini --models-max 3`, `--network host`, bind-mounts the model repos (`/models/ds4`, `/models/aux`; `/models/qwen` removed 2026-08-17) + `LLAMA_CACHE=/models/empty` (mitigates unconfigurable model auto-discovery — see gotchas).
+- **Unit:** `~/.config/systemd/user/llama-router.service` — docker `llama-router` container, image `kyuz0/amd-strix-halo-toolboxes@sha256:ca4c4c…a0211`, `--oom-score-adj=1000`, `--models-preset /models.ini --models-max 3`, `--network host`, bind-mounts the model repos (`/models/ds4`, `/models/aux`, `/models/qwen38`) + `LLAMA_CACHE=/models/empty` (mitigates unconfigurable model auto-discovery — see gotchas).
 - 🔴 **The router image IS Nathan's fork build** — `kyuz0/amd-strix-halo-toolboxes` tracks `Nathanw1014/llama.cpp:strix-halo-vulkan` (the hand-tuned DS4 Vulkan MoE kernels / `GGML_VK_MMID_F16B` path). Pinned **by digest** (`ca4c4c…a0211`, built 2026-08-04) because the `:vulkan-radv-performance` tag is mutable and gets rebuilt. **Version string `10283 (b7b85da9c)` is a FORK counter, NOT comparable to mainline llama.cpp** — don't read it as "stock Vulkan", and don't propose a switch to Nathan's fork as a change (we are already on it). At this point in time it is the efficient/robust/performant build; re-evaluate only against a genuinely newer/better build. Ground truth = the unit file's digest-pin comment block, lines 83–93.
 - **Config file:** `~/llama-stack/config/models.ini` — **RUNTIME copy, bind-mounted to `/models.ini`; this is the one the router actually reads.** Keys are llama-server long options minus `--`; `[*]` is shared defaults; section name IS the model id clients request; router OVERWRITES `--alias` with the section name.
-- ⚠️ **There are TWO copies and they have drifted** (found 2026-08-10). `~/Dev/strix-halo-llm-stack/config/models.ini` is the versioned template; the runtime copy above is live. Differences as of 2026-08-10 are **comment-only** (header date, mount count — the repo copy still says "the two needed model repos" when three are mounted, and the two disagree about the `extractor` pin). Nothing is functionally broken, but **editing only the repo copy is a silent no-op.** `diff` them before trusting either. Not reconciled on 2026-08-10: the runtime file is bind-mounted **by inode** (gotcha #8), so editing it in place risks silently diverging from the container's view — do it deliberately, then restart the router.
+- ⚠️ **There are TWO copies** (they drifted once, found 2026-08-10). `~/Dev/strix-halo-llm-stack/config/models.ini` is the versioned template; the runtime copy above is live. ✅ **Reconciled 2026-08-19 — `diff` is now clean** (the runtime copy was edited in place, then copied over the template). Previously they drifted comment-only. **Editing only the repo copy is a silent no-op.** `diff` them before trusting either. The runtime file is bind-mounted **by inode** (gotchas #8/#12), so it must be edited in place (truncate-and-write, never `sed -i`) and the router restarted afterwards — both were done on 2026-08-19.
 - **Shared defaults `[*]`:** `flash-attn=on`, `cache-ram=0` (disables host-RAM prompt cache — 2026-07-19 OOM root cause), `metrics=true`, `no-webui=true`, `jinja=true`, `cache-type-k/v=q8_0`, `n-gpu-layers=999`.
 
 ## Models
@@ -25,10 +28,17 @@
 |---|---|---|---|---|---|---|
 | `gemma4-e4b` | UD-Q4_K_XL + MTP, ~4.9 GiB | **resident** (load-on-startup) | 131072 | 4, kv-unified | ~114 | ALL aux work: Hermes compression/title-gen/curator/background_review, Hindsight retain+consolidation. sps 0.5, draft-mtp n=4, no-mmproj, reasoning-budget 8192 |
 | `deepseek-v4-flash` | UD-IQ3_XXS, ~98.4 GiB | **RESIDENT at boot** (2026-08-15) | **262144** (raised 2026-08-17) | 3, kv-unified | **19.48 decode / 268.98 prefill @pp2053** (MEASURED live 2026-08-12) | primary resident heavy model: Hermes/pi default, all 5 pi-kalam roles, Hindsight reflect, Open WebUI, email digest. sps 0.5, cache-reuse 256, no dspark sidecar (OOM-killed 2026-08-06). Cold load 3–11 min. Coexists only with gemma4-e4b (98.4+4.9 = 103.3 GiB < 120 GiB cap). `n_ctx_train` is **1048576** — we run 25% of it (was 12.5% at 131072) |
+| **`qwen3.8-27b-q4`** | **UD-Q4_K_XL, ~34.2 GiB resident** | **on-demand — the ONLY swap target** | 262144 | 1, kv-unified | **31.3 / 32.6 decode** (MEASURED in prod 2026-08-19); 12.4 spec-off | `spec-type = draft-mtp`, **`spec-draft-n-max = 5`**. sha256 `3f227079…bc8b01e`. **Evaluated 2026-08-19 and REJECTED as a daily driver** — faster per token than DS4 but `parallel = 1` with reasoning always on, so it loses on real multi-caller work. MTP embedded (`blk.64.nextn.*`), no sidecar. The Q8_0 twin was deleted 2026-08-20 (section + 29 GB GGUF) |
 
-**Model swap:** `~/Dev/strix-halo-llm-stack/tools/swap-model.sh` (path corrected 2026-08-10 — it is NOT `~/llama-stack/swap-model.sh`; that is runtime data and holds no scripts) — evicts/loads `deepseek-v4-flash` on demand. Since 2026-08-15 the steady state is DS4 resident; **qwen3.6-35b was REMOVED from all configs 2026-08-17** (no longer in the model list — only DS4 + gemma serve). Image-gen (sd.cpp ~19 GiB GTT + 8.7 GiB host RAM) still requires an eviction wrapper.
+**Model swap:** `~/Dev/strix-halo-llm-stack/tools/swap-model.sh {ds4|qwen|status}` (path corrected 2026-08-10 — it is NOT `~/llama-stack/swap-model.sh`; that is runtime data and holds no scripts). `qwen` means **qwen3.8-27b-q4**. Both directions measured at **~23 s**, and the script refuses to load a second heavy model unless the first is CONFIRMED evicted. Image-gen (sd.cpp ~19 GiB GTT + 8.7 GiB host RAM) still requires an eviction wrapper.
 
-> **Residency is a runtime state, not config.** The table above is the *steady state after a router restart* (2026-08-17: DS4 + gemma resident only — qwen3.6-35b removed from configs entirely). A manual `swap-model.sh` load or any request naming an unloaded model legitimately changes residency; the watchdog heavy-model mutex evicts as designed. **That is normal operation — do not "fix" it and do not log it as drift.** Check live state with `curl -s localhost:9292/models | jq '.[]|{id,status:.status.value}'` before drawing conclusions from this table.
+🔴 **`HEAVY_OTHERS` in `swap-model.sh` and `HEAVY_MODELS` in `watchdog.env` must stay in lockstep** — both list every heavy id, and a stale list in either is a real OOM path, not cosmetics (that is exactly how the 08-19 `swap-model.sh ds4` bug passed its eviction guard vacuously). Both were trimmed to `qwen3.8-27b-q4,deepseek-v4-flash` on 2026-08-20.
+
+✅ **`load-on-startup` is DS4, and that is now the intended policy** (2026-08-20). A router restart brings DS4 back and leaves qwen3.8-27b-q4 unloaded, regardless of what was resident before — which is what you want, because every unattended caller is pinned to DS4. If qwen is wanted after a restart, run `swap-model.sh qwen` by hand.
+
+> **Residency is a runtime state, not config.** The table above is the *steady state after a router restart* — DS4 + gemma; qwen3.8-27b-q4 is `load-on-startup = false` and never comes up on its own. **As of 2026-08-20 the live state matches it again.** A manual `swap-model.sh qwen` or any request naming the unloaded Q4 legitimately changes residency; the watchdog heavy-model mutex evicts as designed. **That is normal operation — do not "fix" it and do not log it as drift.** Check live state with `curl -s localhost:9292/models | python3 -c "import json,sys;[print(m['id'],m['status']['value']) for m in json.load(sys.stdin)['data']]"` before drawing conclusions from this table.
+>
+> 🔴 **But a hand-loaded Q4 is not free of consequences:** while it is resident, DS4 is not, and every unattended caller pinned to DS4 (both check-in crons, Hermes `model.default`, OpenWebUI, the overnight cycle) will trigger a router autoload that evicts it. If two callers want two different heavy models at once, the mutex cannot save you — it guards CO-RESIDENCY, not CONTENTION (2026-08-19 21:37 OOM). Load the Q4 when you are at the keyboard, and expect to lose it at 21:35 or 23:00.
 
 ## Role → model mapping (aliases GONE — consumers pin concrete ids)
 
@@ -63,10 +73,20 @@
 ## Hermes
 
 - **Config:** `~/.hermes/config.yaml`
-- `model.default: deepseek-v4-flash`, `provider: custom:local-models` (changed 2026-08-15 from qwen3.6-35b — this is what cron jobs resolve to; the check-in crons were failing because they resolved to the evicted qwen)
-- **custom_providers** `Local Models` → `http://127.0.0.1:9292/v1`, api_key `unused-llama-router-direct`, max_tokens 32768, models = [deepseek-v4-flash, gemma4-e4b] (qwen3.6-35b REMOVED 2026-08-17); `model.context_length: 262144` (raised from 131072 2026-08-17 — 3-way sync with models.ini + pi contextWindow)
+- `model.default: deepseek-v4-flash`, `provider: custom:local-models` — **restored 2026-08-20** after the 08-19 qwen evaluation had temporarily pointed it at `qwen3.8-27b-q4`. This is what cron jobs with `model: null` resolve to, so it must always name a RESIDENT model.
+- **custom_providers** `Local Models` → `http://127.0.0.1:9292/v1`, api_key `unused-llama-router-direct`, max_tokens 32768, provider-level `model: deepseek-v4-flash`, models = **[deepseek-v4-flash, gemma4-e4b, qwen3.8-27b-q4]** (the Q8_0 `qwen3.8-27b` was removed 2026-08-20 along with its GGUF); `model.context_length: 262144` (raised from 131072 2026-08-17 — 3-way sync with models.ini + pi contextWindow)
+- ⚠️ **A running Hermes session keeps its pinned model in session state** — config changes do not move it retroactively. Start a new session (or switch in-session) to pick up a `model.default` change. This is what left the user on the slow Q8_0 on 08-19.
+- **Cron model pins (both on `deepseek-v4-flash` as of 2026-08-20):** `morning-check-in` `827131b2c8b5` (07:30), `night-check-in` `5d37a9e1e859` (21:35). Every other job runs `model: null` and therefore resolves to `model.default`. 🔴 **These pins are the load-bearing guard for gotcha #6** — an unattended job naming an unloaded ~98 GiB model is the OOM path. Re-check them after ANY model swap.
 - Aux roles (compression, title_generation, curator, background_review, delegation) → **gemma4-e4b** at :9292
 - `agent.disabled_toolsets: []` (delegation re-enabled)
+
+### Overnight cycle (`overnight-tasks` cron, 23:00)
+
+`~/Dev/automated-workflows/workers/overnight_tasks.py` → `overnight_swap.py` → `swap-model.sh`.
+
+- Skips entirely when there are no pending task files — no swap, no cold load.
+- Otherwise runs `swap-model.sh ds4`, which since 2026-08-20 is normally a **no-op confirmation** (DS4 is already resident). It is still FATAL on failure, because the only way it does real work is if a `qwen3.8-27b-q4` was hand-loaded, and the script's confirmed-eviction guard is what stops DS4 loading on top of it.
+- 🔴 **There is deliberately NO swap back** (removed 2026-08-20; `swap_to_qwen` and `QWEN_35B` are gone from `overnight_swap.py`, and the tests spec their mocks against the handler so a reintroduced swap-back fails loudly). Before this, the cycle ended by swapping to whatever `swap-model.sh`'s `QWEN` pointed at — which had become the Q4 — so every night with pending tasks would have evicted the daily driver.
 
 ## pi
 
@@ -127,6 +147,10 @@ Consequences while unfirewalled — any LAN device can: use the models unauthent
 7. **Hindsight port landmine:** default local URL is :8888 which SearXNG owns. Always explicit `http://127.0.0.1:9177`.
 8. **Single-file bind-mount inode trap:** config files bind-mounted into containers are pinned to an INODE — editors that write temp-file-and-rename silently diverge. Verify via `/running`/behavior, not container health.
 9. **`persistent`/`load-on-startup` ≠ auto-load guarantee** — after restart, resident models may not be warm until first request. Warm them by hand.
+13. 🔴 **`StartLimitBurst=3` / `StartLimitIntervalSec=3600` on `llama-router` counts start ATTEMPTS, not failures.** Four `systemctl --user restart` calls inside an hour left the router DOWN with `Job for llama-router.service failed because start of the service was attempted too often` — which reads like a config error and is not. Recover with `systemctl --user reset-failed llama-router.service && systemctl --user start llama-router.service`. **Budget 3 production restarts per hour**; do tuning sweeps in a standalone container on another port and restart prod once at the end.
+14. 🔴 **`spec-draft-n-max` is hardware/build-specific — MEASURE it, never inherit a published value.** On qwen3.8-27b UD-Q4_K_XL the inherited `n=12` cost ~1.6×: `n=3 29.47 | n=5 31.05 | n=6 30.21 | n=7 27.24 | n=12 19.03 | n=20 15.16` t/s. The published "champion" config scored **17.83** here vs our **31.32**.
+11. 🔴 **`models.ini` is parsed ONCE, at router startup — a model unload/reload does NOT re-read it.** PROVEN 2026-08-19: after adding `spec-type` to `[qwen3.8-27b]` and doing a full `POST /models/unload` + `/models/load` cycle, the respawned child's argv still carried the OLD flag set with no `--spec-type`. Only `systemctl --user restart llama-router` picks up a config change. This compounds the existing unit-file landmine: **a models.ini edit and a unit edit BOTH need the same restart, and both fail silently until then.** Verify by reading the child argv out of `docker logs llama-router | grep 'I srv          load:'` — never by reading the file.
+12. **Editing `models.ini` must preserve the INODE** (see #8). `sed -i` writes a temp file and renames, producing a NEW inode that the container never sees. Use in-place truncate-and-write (Python `open(p,"w")`, or shell `> file` redirection) and re-check with `stat -c %i` inside and outside the container.
 10. **ctx-size 3-way sync** for gemma4-e4b: `models.ini` must match `auxiliary.compression.context_length` AND `custom_providers[Local Models].models.gemma4-e4b.context_length` in `~/.hermes/config.yaml`, AND `contextWindow` in `~/.pi/agent/models.json`.
 
 ## Docs

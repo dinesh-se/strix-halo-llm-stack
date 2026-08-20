@@ -22,6 +22,82 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-20 (later) — "DS4 feels slow" — MEASURED, it is NOT. The cost is stream-drop re-prefill, not throughput
+
+**Observed:** User suspected DS4 was slower than when it was set up. Followed the
+standing debug order from `prefill_amplification_2026_08_02` — `requests_deferred`
+→ prompt sizes → only then benchmark.
+
+1. **`requests_deferred = 0`**, `requests_processing = 0`, all 3 slots idle.
+2. Child argv byte-for-byte matches the documented config (`--parallel 3
+   --ctx-size 262144 --ubatch-size 1024 --slot-prompt-similarity 0.5 --kv-unified`).
+3. GPU idle at 629 MHz (DPM level 1 of 3 — idle state, not throttling); memory
+   pressure `some avg10=0.00`.
+
+**MEASURED** (child `/completion`, greedy, `cache_prompt=false`, unique prefix per
+trial so nothing can be replayed, `id_slot` pinned to the last slot so it cannot
+LRU-steal a conversation's cached prefix):
+
+| prompt | prefill t/s | decode t/s |
+|---|---|---|
+| pp2053 (like-for-like vs the 08-12 baseline) | **256.68** (251.8–261.1) | **18.59** (18.58/18.60/18.59) |
+| pp16389 | 235.36 | 16.67 |
+| pp19605 | 225.57 | 16.52 |
+
+**vs the 2026-08-12 baseline of 268.98 PP / 19.48 TG @pp2053: 95.4% on BOTH axes.**
+Decode was dead stable to ±0.01 t/s across trials. **There is no throughput
+regression.**
+
+**Steady-state user-facing latency is also unchanged.** Effective seconds per
+OUTPUT token (which includes the prefill wait) from `agent.log`, DS4 calls only:
+
+```
+08-06 0.11 | 08-07 0.10 | 08-08 0.10 | 08-09 0.09 | 08-10 0.09 | 08-11 0.10
+08-12 0.11 | 08-13 0.10 | 08-14 0.09 | 08-15 0.10 | 08-16 0.10 | 08-17 0.10
+08-18 0.10 | 08-19 0.08 | 08-20 0.09   <- today is mid-range
+```
+p50 latency today 51.1 s, inside the 31–60 s band of every other day.
+
+**🔴 What the user actually felt — the TAIL, and it is stream drops.** Two calls
+today were pathological, and both are explained:
+
+- `09:20:56 in=100781 latency=1717.0s` (28.6 min) — **no `cache=` field at all**,
+  i.e. 0% prefix reuse. Preceded at 09:07:19 by
+  `agent.stream_diag: Stream drop on attempt 2/3 — RemoteProtocolError: peer
+  closed connection without sending complete message body (incomplete chunked
+  read)`. **Every stream drop forces a full re-prefill**, and at ~100k tokens on
+  the measured decay curve that is 8–11 minutes per attempt.
+- `10:06:37 in=4669 latency=1120.9s` (18.7 min) — the `night-check-in` cron
+  triggered manually as part of the earlier restore work, on a DS4 whose slot
+  caches had just been wiped by the router restart. Self-inflicted by the test.
+
+**Neither the drops nor the big outliers are new:**
+
+| | stream drops | max latency | calls >300 s |
+|---|---|---|---|
+| 08-13 | 5 | 645.8 s | 14 |
+| 08-18 | 5 | **2517.0 s** | 12 |
+| 08-19 | 6 | 585.8 s | 1 |
+| 08-20 | 3 | 1717.0 s | 2 of 19 |
+
+08-18 had a WORSE outlier than today. Today's *rate* looks high (2/19 = 10%) only
+because the sample is 19 calls; the other days run 4–6%.
+
+**Changed:** nothing. This is a measurement.
+
+**🔴 The real open lever is the stream drops**, not the model. `RemoteProtocolError
+(incomplete chunked read)` against `http://127.0.0.1:9292/v1` means the router
+closed a streaming response mid-body. Hermes retries 3×, and on a ~100k-token
+conversation each retry costs a full re-prefill — so ONE drop turns a 60 s turn
+into a ~28 min one. That is the whole "slow" experience. Not investigated yet;
+it has been happening at 1–6/day since at least 08-13.
+
+**⚠️ Also noticed, unrelated:** `SwapFree` is 630 MB of 7.6 GB (92% used) with DS4
+resident. No stall right now (`pressure some avg10=0.00`), but it is the tight
+band that preceded the 07-19 and 08-06 OOM kills. Worth watching.
+
+---
+
 ## 2026-08-20 — qwen3.8-27b evaluation CLOSED: DS4 restored as daily driver, Q8_0 deleted, night cycle no longer swaps away
 
 **Observed:** User's verdict after a day of testing: "the speed is not that great

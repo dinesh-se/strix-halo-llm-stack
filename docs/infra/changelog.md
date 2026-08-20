@@ -22,6 +22,67 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-20 (later 5) — CPU governor A/B: NO measurable benefit. Question CLOSED. ⚠️ EPP left non-default.
+
+**Observed:** The strix-halo-guide runs tuned's `accelerator-performance` profile;
+this box sits on governor `powersave` / EPP `balance_performance` under
+`amd-pstate-epp`. Flagged as the one untested lever from the web survey. User ran
+the sudo commands so it could finally be measured.
+
+**MEASURED — same session, same loaded models, same script, 3 trials each,
+pp2053, greedy, `ignore_eos`, pinned to the probe slot:**
+
+| model | governor | EPP | prefill t/s | decode t/s (trials) |
+|---|---|---|---|---|
+| qwen3.8-27b-q4 (np=2) | performance | performance | **325.73** | 33.58 (33.58/33.58/36.25) |
+| qwen3.8-27b-q4 (np=2) | powersave | performance | **326.46** | 32.37 (32.37/36.37/24.78) |
+| gemma4-e4b (np=4) | performance | performance | **1790.72** | 193.31 (180.2/194.3/193.3) |
+| gemma4-e4b (np=4) | powersave | performance | **1833.43** | 195.36 (195.4/195.7/195.2) |
+
+**Verdict: no benefit. Do not change the governor; the question is CLOSED.**
+- **Prefill — the CPU-sensitive half — is identical**, and `powersave` is
+  marginally HIGHER on both models (326.5 vs 325.7; 1833.4 vs 1790.7).
+- Decode is within noise: qwen's own trial spread (24.8–36.4) is wider than any
+  gap between the arms, and gemma is tight with `powersave` marginally ahead.
+- Consistent with everything else measured here — decode is GPU-bandwidth bound,
+  prefill GPU-compute bound. The CPU is not the constraint.
+
+**⚠️ Honest caveat: the dominant knob was never actually varied.** Under
+`amd-pstate-epp`, **EPP dominates the governor**, and EPP read `performance` in
+BOTH arms — `cpupower frequency-set -g powersave` changes the governor but does
+NOT restore EPP. The original state (governor=powersave + EPP=
+`balance_performance`) was never re-measured. Given prefill is flat to <1% across
+the arms, a third arm is very unlikely to move the conclusion, but it was not run.
+
+**🔴 THE BOX IS NOT IN ITS ORIGINAL STATE. EPP is left at `performance`** (was
+`balance_performance`). Restore needs root:
+```
+sudo cpupower set --epp balance_performance
+```
+Harmless to inference either way; it costs idle power and thermals. **Left for
+the user — this is the one loose end from this entry.**
+
+**Two methodology traps hit, both worth keeping:**
+1. **Greedy + a repetitive prompt hits EOS after ~5 tokens**, and a 5-token
+   decode figure is pure noise — the first qwen run reported 39.63/34.64/34.27
+   off generations of 128/5/5. **`ignore_eos: true` is mandatory** for any decode
+   benchmark. All numbers above are post-fix.
+2. The bench script hardcoded `id_slot = 2` (fine for DS4 at np=3, invalid for
+   qwen at np=2). Now auto-detects `max(slot_id)` so it always lands on the
+   watchdog's probe slot and can never destroy a conversation's cached prefix.
+   Script: `scratchpad/bench_any.py`.
+
+**Unrelated discrepancy noticed, NOT chased:** gemma4-e4b measures **~193–195 t/s**
+decode here; `current.md` records **~114** (from 2026-08-06). Both governor arms
+agree, so it is not the governor — it is a measurement-method difference between
+then and now. The documented figure should be re-taken before being trusted.
+
+**Changed:** nothing in the stack. DS4 was NOT re-benchmarked because it is
+unloaded for the qwen trial; the cleanest possible governor comparison (DS4 at
+`performance` vs this morning's 250.23/18.62) was therefore not available.
+
+---
+
 ## 2026-08-20 (later 4) — ⏳ TEMPORARY: Hermes on qwen3.8-27b-q4 for a trial day. REVERT WITH `tools/end-qwen-trial.sh`.
 
 **Observed:** With `parallel = 2` proven to fix the cache wipe (entry below), the

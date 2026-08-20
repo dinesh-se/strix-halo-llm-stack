@@ -108,13 +108,40 @@ in-file so it cannot be "tidied" back to 1. A comments-stripped diff confirms
   green on both resident models, `heavy_coresident 0`, **no OOM / amdgpu events**.
   MemAvailable 10.4 GiB.
 
-**⚠️ NOT yet verified behaviourally.** The argv proves qwen will now spawn with 2
-slots, and `pin_slot()` returning `max(ids)` then puts the probe on slot 1
-instead of slot 0 — which is the whole fix. But **the end-to-end proof (a
-multi-turn qwen conversation retaining its cache across a 60 s probe cycle) has
-not been run**, because it requires evicting DS4. Do it for free the next time
-qwen is loaded: send a turn, wait 75 s, send a follow-up, and confirm
-`prompt_tokens_details.cached_tokens` is high instead of 0.
+**✅ BEHAVIOURAL PROOF — RUN AND PASSED (11:16–11:20).** Swapped to qwen (18 s),
+ran a real 2-turn conversation through the ROUTER `:9292` exactly as Hermes does:
+
+```
+TURN 1 (cold)          prompt=19664  cached=0     (0%)  lat=71.4s
+  slots after turn 1:  {0: 19874, 1: 1}     <- conversation on 0, PROBE on 1
+  ... 80 s = one full 60 s probe cycle ...
+  slots after probe:   {0: 19874, 1: 1}     <- CONVERSATION SURVIVED
+TURN 2 (warm)          prompt=19705  cached=19660 (99%) lat=2.7s
+```
+**99% cache reuse and 2.7 s vs 71.4 s cold — 26× faster on turn 2**, where at
+`parallel = 1` every single logged call reused nothing. The probe's own 60 s LRU
+refresh on slot 1 is what steers new conversations onto slot 0; the separation is
+self-maintaining.
+
+**🔴 The FIRST run of this test was a FALSE PASS, and the trap is worth
+recording.** `PROBE_GRACE_SECONDS = 300` — for 5 minutes after a model loads,
+`probe_loop` sets `probe_ok[name] = 1` **optimistically and returns without
+probing** (`watchdog.py:546-550`). qwen loaded at ~11:10, so the first test ran
+entirely inside the grace window and "passed" because *nothing was probing it*.
+**The tell is `llama_watchdog_probe_latency_seconds{model=...}` being ABSENT
+while `probe_success` reads 1** — success is a gauge that starts optimistic,
+latency only appears once a real probe lands. Waited for the latency series to
+appear (11:16:10, 0.3211 s), re-ran, and got the result above. On re-check the
+first run's conversation had indeed been sitting on slot 1 and was wiped
+(`n_prompt` 19769 → 1) the moment the real probe started — which independently
+re-confirms the failure mode.
+**Rule: never validate watchdog-interacting behaviour within 5 min of a model
+load; require a `probe_latency_seconds` sample first.**
+
+⚠️ Turn-2 decode read ~17 t/s here, but that is a 46-token generation dominated
+by overhead and is NOT comparable to the 31–33 t/s steady-state benchmark. The
+child's own counter reported `predicted_tokens_seconds 23.07`. This test measured
+CACHE BEHAVIOUR, not throughput.
 
 **🔴 The qwen verdict is now formally UNSETTLED** and should be re-taken on a
 real multi-turn workload at `parallel = 2` before the model is written off.

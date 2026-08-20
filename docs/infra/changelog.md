@@ -22,6 +22,66 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-20 (later 6) — Trial ENDED, DS4 resident again. 🔴 CORRECTION: the "25×" np=1→np=2 claim was WRONG; the real gain is ~36%.
+
+**Changed:** ran `tools/end-qwen-trial.sh` — reverted the two
+`~/.hermes/config.yaml` keys and `swap-model.sh ds4` (**3 min 4 s**).
+**End state = the intended steady state:** `deepseek-v4-flash loaded np=3
+ctx=262144` + `gemma4-e4b loaded np=4 ctx=131072` resident, `qwen3.8-27b-q4
+unloaded np=2 ctx=262144` on-demand. `load-on-startup` = true/true/**false**, so
+this survives a router restart. Hermes `model.default` and provider `model` both
+`deepseek-v4-flash`; both check-in crons still DS4. All five services active,
+`NRestarts=0`, no OOM/amdgpu events, MemAvailable 10.1 GiB, real DS4 completion
+`finish=stop`. Power state left at the measured-best `powersave` +
+`balance_performance`.
+
+**`qwen3.8-27b-q4 parallel = 2` is KEPT** — it is a permanent fix, not part of
+the trial.
+
+**🔴 CORRECTION to the (later 3) entry — the headline number there is wrong.**
+That entry claimed `parallel = 1` cost **25×**, from qwen3.8-27b-q4's 373.0 s
+median latency vs qwen3.6-35b's 15.0 s. **That comparison is invalid**: it is
+across two DIFFERENT MODELS on different workloads (output lengths differ by an
+order of magnitude), not a controlled np=1 vs np=2 test. It should not have been
+written as a factor.
+
+**The controlled same-model comparison, now that real np=2 usage exists:**
+
+| day | np | calls | calls w/ cache | med cache % | med prompt | med latency | **med s / output token** |
+|---|---|---|---|---|---|---|---|
+| 2026-08-19 | 1 | 10 | 3/10 (30%) | 84% | 48,747 | 248.0 s | **0.14 s** |
+| 2026-08-20 | 2 | 27 | 18/27 (67%) | 95% | 62,996 | 212.9 s | **0.09 s** |
+
+**Real-world gain is ~36% on seconds-per-output-token (0.14 → 0.09), achieved on
+a 29% LARGER median prompt** — plus cache reuse present on 67% of calls instead
+of 30%, and median reuse 95% vs 84%. Real and worth having, but **not 25×**.
+
+**Why the synthetic test overstated it.** The controlled test (0% → 99% cache,
+71.4 s → 2.7 s on turn 2) measures the **worst case**: a probe landing exactly
+between two turns. At np=1 that did not happen every turn — reply quickly enough
+and the cache survived, which is exactly why 3 of 10 np=1 calls still showed
+84% reuse. The mechanism and its direction are proven; the *frequency* is
+intermittent, so the average gain is far smaller than the worst case.
+
+**Standing rule from (later 3) is UNCHANGED and still correct:** never run a
+conversational model at `parallel = 1` while llama-watchdog probes it. Only the
+magnitude was overstated.
+
+**Bonus finding — qwen at np=2 is roughly at PARITY with DS4 on real work.**
+0.09 s/output-token, against DS4's 0.08–0.11 s across two weeks. So the honest
+read on the (later 4) trial: qwen is no longer *handicapped*, but it is also not
+a clear win over DS4 on agentic workloads — its raw 31–33 t/s decode advantage
+is eaten by reasoning tokens and 2 slots vs 3.
+
+**Heavy-mutex fired twice during the trial — both benign and correctly.**
+`12:05:57` evicted qwen because the user's OLD Telegram session still had
+`deepseek-v4-flash` pinned in session state (the documented "a running session
+keeps its model" caveat); `12:11:16` evicted DS4 when the post-`/stop` new
+session picked up the qwen default. Exactly the transition, not a rogue caller.
+No OOM. `heavy_evictions_total` 0 → 2.
+
+---
+
 ## 2026-08-20 (later 5) — 🔴 CPU governor A/B, all 3 arms: the ORIGINAL setting WINS. `performance` COSTS ~4-5% prefill. Question CLOSED.
 
 **Observed:** The strix-halo-guide runs tuned's `accelerator-performance`; this

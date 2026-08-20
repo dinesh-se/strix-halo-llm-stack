@@ -22,64 +22,76 @@ captured at the time and is marked accordingly.
 
 ---
 
-## 2026-08-20 (later 5) — CPU governor A/B: NO measurable benefit. Question CLOSED. ⚠️ EPP left non-default.
+## 2026-08-20 (later 5) — 🔴 CPU governor A/B, all 3 arms: the ORIGINAL setting WINS. `performance` COSTS ~4-5% prefill. Question CLOSED.
 
-**Observed:** The strix-halo-guide runs tuned's `accelerator-performance` profile;
-this box sits on governor `powersave` / EPP `balance_performance` under
-`amd-pstate-epp`. Flagged as the one untested lever from the web survey. User ran
-the sudo commands so it could finally be measured.
+**Observed:** The strix-halo-guide runs tuned's `accelerator-performance`; this
+box sits on governor `powersave` / EPP `balance_performance` under
+`amd-pstate-epp`. Flagged as the one untested lever from the web survey.
 
-**MEASURED — same session, same loaded models, same script, 3 trials each,
-pp2053, greedy, `ignore_eos`, pinned to the probe slot:**
+**MEASURED — 3 arms, same session, same loaded models, same script, 3 trials
+each, pp2053, greedy, `ignore_eos`, pinned to the probe slot. Arm 3 was run
+TWICE to check for time-drift.**
 
-| model | governor | EPP | prefill t/s | decode t/s (trials) |
-|---|---|---|---|---|
-| qwen3.8-27b-q4 (np=2) | performance | performance | **325.73** | 33.58 (33.58/33.58/36.25) |
-| qwen3.8-27b-q4 (np=2) | powersave | performance | **326.46** | 32.37 (32.37/36.37/24.78) |
-| gemma4-e4b (np=4) | performance | performance | **1790.72** | 193.31 (180.2/194.3/193.3) |
-| gemma4-e4b (np=4) | powersave | performance | **1833.43** | 195.36 (195.4/195.7/195.2) |
+| model | governor + EPP | prefill t/s | decode t/s |
+|---|---|---|---|
+| qwen3.8-27b-q4 | performance + performance | 325.73 | 33.58 |
+| qwen3.8-27b-q4 | powersave + performance | 326.46 | 32.37 |
+| **qwen3.8-27b-q4** | **powersave + balance_performance (ORIGINAL)** | **338.42 / 337.10** | 38.35 / 38.64 |
+| gemma4-e4b | performance + performance | 1790.72 | 193.31 |
+| gemma4-e4b | powersave + performance | 1833.43 | 195.36 |
+| **gemma4-e4b** | **powersave + balance_performance (ORIGINAL)** | **1881.40 / 1867.44** | 194.21 / 193.26 |
 
-**Verdict: no benefit. Do not change the governor; the question is CLOSED.**
-- **Prefill — the CPU-sensitive half — is identical**, and `powersave` is
-  marginally HIGHER on both models (326.5 vs 325.7; 1833.4 vs 1790.7).
-- Decode is within noise: qwen's own trial spread (24.8–36.4) is wider than any
-  gap between the arms, and gemma is tight with `powersave` marginally ahead.
-- Consistent with everything else measured here — decode is GPU-bandwidth bound,
-  prefill GPU-compute bound. The CPU is not the constraint.
+**🔴 The ORIGINAL setting is the FASTEST, and it is EPP that matters, not the
+governor.** Prefill vs the `performance` arm: qwen **+3.7%** (337.8 avg vs
+325.7), gemma **+4.7%** (1874 avg vs 1790.7). Same direction on two unrelated
+models, reproduced on a repeat run (338.42→337.10, 1881.40→1867.44), with
+within-arm spread under 1% on gemma.
 
-**⚠️ Honest caveat: the dominant knob was never actually varied.** Under
-`amd-pstate-epp`, **EPP dominates the governor**, and EPP read `performance` in
-BOTH arms — `cpupower frequency-set -g powersave` changes the governor but does
-NOT restore EPP. The original state (governor=powersave + EPP=
-`balance_performance`) was never re-measured. Given prefill is flat to <1% across
-the arms, a third arm is very unlikely to move the conclusion, but it was not run.
+**Correcting the first read.** The initial 2-arm result looked flat and was
+written up as "no benefit" — but **EPP had stayed at `performance` in both
+arms**, because `cpupower frequency-set -g powersave` reverts the governor and
+NOT the EPP. Only after the user restored EPP to `balance_performance` did the
+real arm appear, and it is the fastest of the three. **The governor is close to
+irrelevant; EPP is the knob.**
 
-**🔴 THE BOX IS NOT IN ITS ORIGINAL STATE. EPP is left at `performance`** (was
-`balance_performance`). Restore needs root:
-```
-sudo cpupower set --epp balance_performance
-```
-Harmless to inference either way; it costs idle power and thermals. **Left for
-the user — this is the one loose end from this entry.**
+**Plausible mechanism — and it is specific to an APU.** Strix Halo shares one
+power/thermal budget between CPU and iGPU. Pinning the CPU to EPP=`performance`
+keeps cores boosted and **steals TDP headroom from the iGPU**, which is what
+actually does the work. GPU `pp_dpm_sclk` sat at 2728 MHz under load with a
+2900 MHz top bin, i.e. genuinely power-limited rather than clock-limited.
 
-**Two methodology traps hit, both worth keeping:**
+**Decode is unaffected**, as expected — gemma reads 193–195 t/s across ALL THREE
+arms. qwen's decode looks higher on the original arm (38.5 vs 33.6 median) but
+its trial spread is 24.7–41.7, far too wide to claim from; **do not cite the qwen
+decode delta.** The prefill result is the trustworthy one.
+
+**ACTION: keep governor `powersave` + EPP `balance_performance`. Do NOT adopt
+tuned's `accelerator-performance` or `cpupower -g performance` — on this box the
+published recommendation is BACKWARDS and costs ~4-5% prefill.** Box was restored
+to the original state by the user; verified `powersave` / `balance_performance`
+consistent across all cores.
+
+**⚠️ Honest limit:** the three arms were run SEQUENTIALLY, not interleaved or
+randomised. Arm 3 reproducing tightly shows the measurement is stable, but does
+not fully exclude a monotonic drift between arm 1 (~20 min earlier) and arm 3.
+One more `performance` run would settle it; the practical decision is unchanged
+either way, since the original is at worst equal.
+
+**Two methodology traps hit, both now fixed in `tools/bench-model.py`:**
 1. **Greedy + a repetitive prompt hits EOS after ~5 tokens**, and a 5-token
-   decode figure is pure noise — the first qwen run reported 39.63/34.64/34.27
-   off generations of 128/5/5. **`ignore_eos: true` is mandatory** for any decode
-   benchmark. All numbers above are post-fix.
-2. The bench script hardcoded `id_slot = 2` (fine for DS4 at np=3, invalid for
-   qwen at np=2). Now auto-detects `max(slot_id)` so it always lands on the
-   watchdog's probe slot and can never destroy a conversation's cached prefix.
-   Script: `scratchpad/bench_any.py`.
+   decode figure is pure noise — one run reported "39.63 / 34.64 / 34.27" off
+   generations of 128 / 5 / 5. **`ignore_eos: true` is MANDATORY.**
+2. The script hardcoded `id_slot = 2` (fine at DS4's np=3, invalid at qwen's
+   np=2). Now auto-detects `max(slot_id)` so it always lands on the watchdog
+   probe slot and can never destroy a conversation's cached prefix.
 
 **Unrelated discrepancy noticed, NOT chased:** gemma4-e4b measures **~193–195 t/s**
-decode here; `current.md` records **~114** (from 2026-08-06). Both governor arms
-agree, so it is not the governor — it is a measurement-method difference between
-then and now. The documented figure should be re-taken before being trusted.
+decode here; `current.md` records **~114** (2026-08-06). All three arms agree, so
+it is a measurement-method difference, not power state. Re-take the documented
+figure before trusting it.
 
-**Changed:** nothing in the stack. DS4 was NOT re-benchmarked because it is
-unloaded for the qwen trial; the cleanest possible governor comparison (DS4 at
-`performance` vs this morning's 250.23/18.62) was therefore not available.
+**Changed:** nothing in the stack. DS4 was not benchmarked — it is unloaded for
+the qwen trial.
 
 ---
 

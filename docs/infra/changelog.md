@@ -22,6 +22,66 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-25 (later 10) — DS4 `parallel` 3 → 4: the watchdog stops eating a conversation slot
+
+**Observed:** llama-watchdog pins its 60 s probe to `max(slot_id)`, so one slot is
+permanently the probe's and never retains a conversation. MEASURED over 5 days at
+`-np 3`: **slot 2 took 6,534 requests at 97 tokens avg** (the probe) while slots 0 and
+1 took 862 and 1,184 real requests. That left **two** slots for General + Morning
+Briefing + Night Plan + the DM + pi + cron agents, and cold-slot re-prefills hit
+23–47% of turns (up to 98k tokens / 816 s). This was the other half of the topic
+latency problem in (later 7); the `session_reset` fix addressed session age, not this.
+
+**Changed:** `[deepseek-v4-flash] parallel = 3` → `4` in both `models.ini` copies
+(inode-preserving, inodes 12714493 / 9046916 unchanged, `diff` clean). Section-scoped:
+`gemma4-e4b` stays at 4 and `qwen3.8-27b-q4` at 2. `ctx-size` unchanged at 262144,
+`kv-unified` still explicit. Restarted `llama-router` only — no consumer config moved,
+because nothing outside models.ini encodes the slot count.
+
+**Expected:** three slots holding conversations instead of two, so a topic is less
+likely to return to an evicted slot and pay a full re-prefill.
+
+**Refs:** `~/observability/stack/llama-watchdog/watchdog.py:401` `pin_slot()`.
+
+**Smoke test:** PASSED, on the running process.
+1. Child argv: DS4 `--ctx-size 262144 --parallel 4 --kv-unified`; gemma4 unchanged.
+2. `[59951] load_model: initializing, n_slots = 4, n_ctx_slot = 262144, kv_unified = 'true'`
+   — 4 slots at the FULL ctx, confirming kv-unified does not split `n_ctx`.
+3. Real completion pinned to the NEW slot 3: "17 + 25" → `42`, `finish_reason: stop`.
+   gemma4 → `ok`.
+4. **Watchdog followed automatically.** `pin_slot()` returns `max()` of the live
+   `/slots` ids, so it re-pinned to slot 3 with NO watchdog change. `--once` diagnostic:
+   `probe deepseek-v4-flash: ok=True ... id_slot=3`. Live service has real
+   `probe_latency_seconds` for both models (DS4 0.1943 s, gemma4 0.0262 s),
+   `probe_failures_total 0`.
+5. **The win, demonstrated live** — per-slot traffic since the restart:
+   | slot | requests | avg prompt tokens |
+   |---|---|---|
+   | 3 | 32 | **1** ← the probe, moved off the conversation slots |
+   | 2 | 10 | **5,326** ← real traffic on what used to be the probe's slot |
+6. DS4 cold load 3 min 6 s. All units active.
+
+**MEASURED cost: +1.08 GiB of GTT** (108.32 → 109.40), MemAvailable 10.70 → 10.04 GiB.
+🔴 That is **4× the ~0.25 GB** the models.ini comment predicted from a 35b measurement
+— the same direction and magnitude of error as the ctx estimate in (later 8) (0.6
+predicted, 2.58 actual). **Stop quoting per-slot / per-ctx buffer costs from other
+models; measure on DS4.** The comment in models.ini now carries the measured figure.
+
+⚠️ **The benefit is capped by the shared KV pool, and this bounds what to expect.**
+Under `kv-unified` the KV buffer is `n_ctx` **TOTAL and shared**, so a 4th slot adds
+**no KV capacity** — only compute buffers. Against the measured prompt distribution
+(median 65,835 / p90 119,394): three conversations at the median need ~198k of the
+262,144 pool and fit; at p90 they need ~358k and evict regardless of slot count. So
+this reduces eviction on typical turns and does **not** solve it for the largest
+conversations. Do not expect the 23–47% cold-turn rate to go to zero.
+
+⚠️ **Checked before applying, and worth repeating:** if `pin_slot()` had hardcoded
+slot 2 instead of computing `max()`, this change would have looked applied while the
+probe kept clobbering a conversation slot and slot 3 sat idle — a silent no-op.
+Verify the CALLER, not just the config (see `model_swap_invalidates_consumers`).
+
+---
+
 ## 2026-08-25 (later 9) — REVERTED (later 8): DS4 back to 262144. 128k does not fit this workload.
 
 **Observed:** After lowering DS4 to 131072 I checked whether Hermes' compaction point

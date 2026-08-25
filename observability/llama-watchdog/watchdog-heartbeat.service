@@ -1,0 +1,13 @@
+[Unit]
+Description=Dead-man check for llama-watchdog (:9611)
+# Deliberately a SEPARATE process from watchdog.py: a wedged watchdog still
+# holds its port and its unit still reads "active", so OnFailure= alone cannot
+# see it. This proves the metrics endpoint actually answers.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '\
+  if ! curl -sf -m 10 http://127.0.0.1:9611/metrics | grep -q "^llama_watchdog_"; then \
+    /home/YOU/strix-halo-llm-stack/observability/llama-watchdog/notify-telegram.sh \
+      "🔴 <b>heartbeat</b> — llama-watchdog (:9611) is not serving metrics. It is the only thing alerting on device-lost, OOM co-residency and memory pressure, so alerting is DOWN until this is fixed."; \
+  fi'

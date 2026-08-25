@@ -1,0 +1,8 @@
+[Unit]
+Description=Memory attribution sample (unexplained bleed investigation, 2026-08-25)
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/home/YOU/strix-halo-llm-stack/observability/mem-sampler/sample-memory.py

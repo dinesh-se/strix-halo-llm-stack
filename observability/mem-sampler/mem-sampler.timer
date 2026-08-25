@@ -1,0 +1,13 @@
+[Unit]
+Description=Sample memory attribution every 5 minutes
+# Investigating a ~3.2 GiB loss over ~10h whose steepest drop brackets the
+# 21:35 and 23:00 crons. 5 min gives ~12 samples across each cron window.
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=20s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

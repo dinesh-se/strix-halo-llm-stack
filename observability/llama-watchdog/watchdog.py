@@ -56,6 +56,7 @@ relays their metrics rather than letting VM scrape them.
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -139,6 +140,48 @@ HEAVY_EVICT_COOLDOWN = float(os.environ.get("HEAVY_EVICT_COOLDOWN", "60"))
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
+# Forum-topic id inside TELEGRAM_CHAT. Empty = post to the group's General
+# thread, i.e. exactly the pre-2026-08-25 behaviour, so leaving it unset cannot
+# break an existing deployment. Telegram calls this `message_thread_id`; it is
+# the number in a topic message link (t.me/c/<internal>/<TOPIC>/<msg>).
+TELEGRAM_TOPIC_ID = os.environ.get("TELEGRAM_TOPIC_ID", "").strip()
+
+# ---------------------------------------------------------------------------
+# HOST HEALTH (added 2026-08-25) — memory pressure + systemd unit liveness.
+#
+# Why this lives here and not in Prometheus/Grafana: Grafana was retired
+# 2026-08-13 and VictoriaMetrics is next, so alert RULES needed a new home.
+# This watchdog already owns a Telegram sender, Restart=always and four
+# independent loops, which makes it the natural place. It reads /proc directly,
+# so it needs no exporter and keeps working after VM and node-exporter go.
+#
+# 🔴 Thresholds are grounded in MEASURED behaviour of this box (2026-08-25), not
+# guessed: healthy sat at 5-7 GiB MemAvailable, and the state the user reported
+# as "Hermes isn't replying" was 3.6-3.8 GiB. 3.0 GiB therefore sits below normal
+# operation but above the observed-bad band.
+HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "60"))
+HEALTH_FAIL_THRESHOLD = int(os.environ.get("HEALTH_FAIL_THRESHOLD", "3"))
+MEM_AVAIL_MIN_GIB = float(os.environ.get("MEM_AVAIL_MIN_GIB", "3.0"))
+SWAP_USED_MAX_FRAC = float(os.environ.get("SWAP_USED_MAX_FRAC", "0.80"))
+# Direct-reclaim inefficiency: pgscan_direct/pgsteal_direct as a RATE over the
+# interval, never the cumulative totals (those only ever show a lifetime
+# average and would never recover once tripped). On 2026-08-25 the thrashing
+# box measured 6.0x; healthy reclaim is close to 1.0.
+RECLAIM_RATIO_MAX = float(os.environ.get("RECLAIM_RATIO_MAX", "3.0"))
+# Ignore the ratio unless real scanning happened this interval, otherwise a
+# handful of pages produces a meaningless ratio on an idle box.
+RECLAIM_MIN_SCAN = int(os.environ.get("RECLAIM_MIN_SCAN", "10000"))
+
+# systemd units whose death should page. NOTE hindsight-daemon.service is
+# deliberately ABSENT: hindsight_loop() already probes its /health and requires
+# database=connected, which also catches a running-but-wedged daemon that
+# `is-active` would happily call "active". Adding it here would only
+# double-alert on the strictly weaker signal.
+HEALTH_UNITS = [u.strip() for u in os.environ.get(
+    "HEALTH_UNITS",
+    "llama-router.service,hermes-gateway.service,"
+    "firecrawl-proxy.socket,hermes-dashboard-proxy.socket",
+).split(",") if u.strip()]
 
 # Hindsight memory daemon (hindsight-daemon.service, :9177). Probe-only — no
 # recovery action here, systemd (Restart=always) owns restarts. This exists
@@ -195,6 +238,17 @@ _state = {
     "hindsight_up": 1,          # gauge, starts optimistic like probe_ok does
     "hindsight_consec_fail": 0,
     "hindsight_alerted": False,  # avoid re-alerting every interval while down
+    # -- host health (2026-08-25) --
+    "mem_avail_bytes": 0,      # gauge
+    "swap_used_frac": 0.0,     # gauge
+    "reclaim_ratio": 0.0,      # gauge, rate-based over HEALTH_INTERVAL
+    "mem_pressure": 0,         # gauge 1/0 — currently over threshold
+    "mem_consec_fail": 0,
+    "mem_alerted": False,
+    "unit_up": {},             # unit -> 1/0
+    "unit_consec_fail": {},    # unit -> int
+    "unit_alerted": {},        # unit -> bool
+    "_reclaim_prev": None,     # (pgscan, pgsteal) from the previous sample
 }
 
 
@@ -416,23 +470,68 @@ def hindsight_healthy() -> tuple[bool, str]:
     return False, f"unexpected payload: {body[:150]}"
 
 
+def _tg_post(chat: str, msg: str, html: bool) -> tuple:
+    body_obj = {"chat_id": chat, "text": msg}
+    if html:
+        body_obj["parse_mode"] = "HTML"
+    if TELEGRAM_TOPIC_ID:
+        body_obj["message_thread_id"] = TELEGRAM_TOPIC_ID
+    return http(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        data=json.dumps(body_obj).encode(), timeout=20,
+    )
+
+
 def telegram(msg: str) -> None:
+    """Send an alert, recovering from the two delivery failures seen in prod.
+
+    🔴 Both of these silently ate alerts for weeks before 2026-08-25, because a
+    failed ALERT has no way to alert about itself — the Grafana rule that used
+    to watch `alerts_failed` died with Grafana on 2026-08-13.
+
+    1. Group->supergroup migration. Enabling forum topics re-issues the chat id
+       and the old one is rejected forever after. **50 alerts were dropped in 30
+       days.** Telegram returns the replacement as `migrate_to_chat_id`, so we
+       follow it and latch it for the rest of the process rather than dropping.
+    2. HTML parse errors. Alert text interpolates exception strings, and one
+       containing `<urlopen ...>` was read as a start tag ("Unsupported start
+       tag urlopen", 2026-08-24). Retry as plain text: a slightly ugly alert
+       that arrives beats a pretty one that does not.
+    """
+    global TELEGRAM_CHAT
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
         log("WARN telegram not configured, alert dropped")
         with _lock:
             _state["alerts_failed"] += 1
         return
-    payload = json.dumps({
-        "chat_id": TELEGRAM_CHAT, "text": msg, "parse_mode": "HTML",
-    }).encode()
-    status, body = http(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data=payload, timeout=20,
-    )
-    if status != 200:
-        log(f"WARN telegram send failed: {status} {body[:200]}")
-        with _lock:
-            _state["alerts_failed"] += 1
+
+    status, body = _tg_post(TELEGRAM_CHAT, msg, True)
+    if status == 200:
+        return
+
+    if "migrate_to_chat_id" in body:
+        try:
+            new_chat = str(json.loads(body)["parameters"]["migrate_to_chat_id"])
+        except Exception:  # noqa: BLE001
+            new_chat = ""
+        if new_chat:
+            log(f"WARN telegram chat migrated {TELEGRAM_CHAT} -> {new_chat}; "
+                f"following it. PERSIST THIS in watchdog.env or every restart "
+                f"re-learns it after another dropped alert.")
+            TELEGRAM_CHAT = new_chat
+            status, body = _tg_post(TELEGRAM_CHAT, msg, True)
+            if status == 200:
+                return
+
+    if "can't parse entities" in body or "parse entities" in body:
+        log(f"WARN telegram HTML rejected ({body[:120]}); resending as plain text")
+        status, body = _tg_post(TELEGRAM_CHAT, re.sub(r"<[^>]+>", "", msg), False)
+        if status == 200:
+            return
+
+    log(f"WARN telegram send failed: {status} {body[:200]}")
+    with _lock:
+        _state["alerts_failed"] += 1
 
 
 def model_state(model: str) -> str:
@@ -826,6 +925,154 @@ def hindsight_loop() -> None:
         time.sleep(HINDSIGHT_PROBE_INTERVAL)
 
 
+
+def _proc_kv(path: str, sep: str) -> dict:
+    """Parse /proc/meminfo or /proc/vmstat into {key: int}. Values in meminfo
+    are kB; vmstat values are page counts. Callers convert."""
+    out = {}
+    with open(path) as f:
+        for line in f:
+            k, _, v = line.partition(sep)
+            v = v.strip().split()
+            if v:
+                try:
+                    out[k.strip()] = int(v[0])
+                except ValueError:
+                    pass
+    return out
+
+
+def host_memory() -> dict:
+    """MemAvailable, swap fill, and direct-reclaim efficiency for THIS interval.
+
+    🔴 The reclaim figure MUST be a rate. pgscan_direct/pgsteal_direct are
+    monotonic counters, so their raw quotient is a lifetime average that would
+    never fall back below the threshold once the box had thrashed even once.
+    """
+    mi = _proc_kv("/proc/meminfo", ":")
+    vm = _proc_kv("/proc/vmstat", " ")
+    swap_total = mi.get("SwapTotal", 0)
+    swap_used = swap_total - mi.get("SwapFree", 0)
+    scan, steal = vm.get("pgscan_direct", 0), vm.get("pgsteal_direct", 0)
+
+    with _lock:
+        prev = _state["_reclaim_prev"]
+        _state["_reclaim_prev"] = (scan, steal)
+    ratio = 0.0
+    if prev:
+        d_scan, d_steal = scan - prev[0], steal - prev[1]
+        # Only meaningful when real scanning happened; also guards a counter
+        # reset across a reboot producing a negative delta.
+        if d_scan >= RECLAIM_MIN_SCAN and d_steal >= 0:
+            ratio = d_scan / max(d_steal, 1)
+    return {
+        "avail": mi.get("MemAvailable", 0) * 1024,
+        "swap_frac": (swap_used / swap_total) if swap_total else 0.0,
+        "reclaim_ratio": ratio,
+    }
+
+
+def unit_active(unit: str) -> bool:
+    """True when systemd reports the user unit active. Sockets report active
+    while merely listening, which is exactly the liveness we want for the
+    on-demand proxies — their backing .service is SUPPOSED to be inactive."""
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True, text=True, timeout=10,
+        )
+        return r.stdout.strip() == "active"
+    except Exception:  # noqa: BLE001 - treat an unreadable systemd as unknown
+        return True     # fail-OPEN: never page because systemctl itself hiccuped
+
+
+def health_loop() -> None:
+    """Memory pressure + systemd unit liveness -> Telegram, debounced.
+
+    Same debounce contract as hindsight_loop: one alert on the way down after
+    HEALTH_FAIL_THRESHOLD consecutive bad samples, one on the way back up, and
+    nothing in between.
+    """
+    while True:
+        try:
+            m = host_memory()
+            avail_gib = m["avail"] / (1024 ** 3)
+            reasons = []
+            if avail_gib < MEM_AVAIL_MIN_GIB:
+                reasons.append(f"MemAvailable {avail_gib:.1f} GiB "
+                               f"(< {MEM_AVAIL_MIN_GIB} GiB)")
+            if m["swap_frac"] > SWAP_USED_MAX_FRAC:
+                reasons.append(f"swap {m['swap_frac']*100:.0f}% full "
+                               f"(> {SWAP_USED_MAX_FRAC*100:.0f}%)")
+            if m["reclaim_ratio"] > RECLAIM_RATIO_MAX:
+                reasons.append(f"direct reclaim {m['reclaim_ratio']:.1f}x "
+                               f"(> {RECLAIM_RATIO_MAX}x) — scanning far more "
+                               f"than it can free")
+            bad = bool(reasons)
+
+            recovered = False
+            should_alert = False
+            with _lock:
+                _state["mem_avail_bytes"] = m["avail"]
+                _state["swap_used_frac"] = m["swap_frac"]
+                _state["reclaim_ratio"] = m["reclaim_ratio"]
+                _state["mem_pressure"] = 1 if bad else 0
+                if bad:
+                    _state["mem_consec_fail"] += 1
+                    if (_state["mem_consec_fail"] >= HEALTH_FAIL_THRESHOLD
+                            and not _state["mem_alerted"]):
+                        _state["mem_alerted"] = True
+                        should_alert = True
+                else:
+                    if _state["mem_alerted"]:
+                        recovered = True
+                    _state["mem_consec_fail"] = 0
+                    _state["mem_alerted"] = False
+
+            if should_alert:
+                telegram(
+                    "🔴 <b>llama-watchdog</b>\nHost memory pressure:\n"
+                    + "\n".join(f"• {r}" for r in reasons)
+                    + "\n\nGTT is unswappable, so the kernel can only reclaim "
+                      "hermes/hindsight/llama-router working sets — which is what "
+                      "makes replies stall. Check GTT first:\n"
+                      "<code>cat /sys/class/drm/card1/device/mem_info_gtt_used</code>"
+                )
+            if recovered:
+                telegram("🟢 <b>llama-watchdog</b>\nHost memory pressure cleared "
+                         f"(MemAvailable {avail_gib:.1f} GiB).")
+
+            for unit in HEALTH_UNITS:
+                up = unit_active(unit)
+                u_alert = u_recovered = False
+                with _lock:
+                    _state["unit_up"][unit] = 1 if up else 0
+                    if up:
+                        if _state["unit_alerted"].get(unit):
+                            u_recovered = True
+                        _state["unit_consec_fail"][unit] = 0
+                        _state["unit_alerted"][unit] = False
+                    else:
+                        c = _state["unit_consec_fail"].get(unit, 0) + 1
+                        _state["unit_consec_fail"][unit] = c
+                        if (c >= HEALTH_FAIL_THRESHOLD
+                                and not _state["unit_alerted"].get(unit)):
+                            _state["unit_alerted"][unit] = True
+                            u_alert = True
+                if u_alert:
+                    log(f"HEALTH unit DOWN: {unit}")
+                    telegram(f"🔴 <b>llama-watchdog</b>\nUnit <b>{unit}</b> is not "
+                             f"active.\n<code>systemctl --user status {unit}</code>")
+                if u_recovered:
+                    telegram(f"🟢 <b>llama-watchdog</b>\nUnit <b>{unit}</b> is "
+                             f"active again.")
+        except Exception as e:  # noqa: BLE001 - loop must never die
+            with _lock:
+                _state["loop_errors"] += 1
+            log(f"ERROR health_loop: {type(e).__name__}: {e}")
+        time.sleep(HEALTH_INTERVAL)
+
+
 _METRIC_LINE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+(.+)$")
 
 
@@ -866,6 +1113,11 @@ def render() -> str:
         loop_errors = _state["loop_errors"]
         hindsight_up = _state["hindsight_up"]
         hindsight_fail = _state["hindsight_consec_fail"]
+        mem_avail = _state["mem_avail_bytes"]
+        swap_frac = _state["swap_used_frac"]
+        reclaim_ratio = _state["reclaim_ratio"]
+        mem_pressure = _state["mem_pressure"]
+        unit_up = dict(_state["unit_up"])
 
     out = [
         "# HELP llama_watchdog_probe_success Whether the last real-completion probe succeeded (1/0)",
@@ -934,6 +1186,24 @@ def render() -> str:
             seen_meta = True
         body.extend(relabel(text, model))
     out.extend(body)
+    out += [
+        "# HELP llama_watchdog_mem_available_bytes Host MemAvailable",
+        "# TYPE llama_watchdog_mem_available_bytes gauge",
+        f"llama_watchdog_mem_available_bytes {mem_avail}",
+        "# HELP llama_watchdog_swap_used_ratio Fraction of swap in use",
+        "# TYPE llama_watchdog_swap_used_ratio gauge",
+        f"llama_watchdog_swap_used_ratio {swap_frac:.4f}",
+        "# HELP llama_watchdog_reclaim_ratio pgscan_direct/pgsteal_direct over the last interval (rate, not lifetime)",
+        "# TYPE llama_watchdog_reclaim_ratio gauge",
+        f"llama_watchdog_reclaim_ratio {reclaim_ratio:.3f}",
+        "# HELP llama_watchdog_mem_pressure Host memory currently over threshold (1/0)",
+        "# TYPE llama_watchdog_mem_pressure gauge",
+        f"llama_watchdog_mem_pressure {mem_pressure}",
+        "# HELP llama_watchdog_unit_up systemd user unit is active (1/0)",
+        "# TYPE llama_watchdog_unit_up gauge",
+    ]
+    for unit, v in sorted(unit_up.items()):
+        out.append(f'llama_watchdog_unit_up{{unit="{unit}"}} {v}')
     return "\n".join(out) + "\n"
 
 
@@ -986,6 +1256,7 @@ if __name__ == "__main__":
     threading.Thread(target=probe_loop, args=(host,), daemon=True).start()
     threading.Thread(target=scrape_loop, args=(host,), daemon=True).start()
     threading.Thread(target=heavy_mutex_loop, daemon=True).start()
+    threading.Thread(target=health_loop, daemon=True).start()
     if HINDSIGHT_URL:
         threading.Thread(target=hindsight_loop, daemon=True).start()
     HTTPServer(ADDR, Handler).serve_forever()

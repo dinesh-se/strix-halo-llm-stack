@@ -1,0 +1,7 @@
+[Unit]
+Description=Telegram alert for failed unit %i
+# No OnFailure= here — a failing alerter must not recurse.
+
+[Service]
+Type=oneshot
+ExecStart=/home/YOU/strix-halo-llm-stack/observability/llama-watchdog/notify-telegram.sh "🔴 <b>systemd</b> — unit <b>%i</b> entered a failed state on %H. Check: systemctl --user status %i"

@@ -125,7 +125,7 @@ automatically** and retries HTML failures as plain text.
 | device-lost / wedged model | `probe_loop` (+ recovery) |
 | two heavy models co-resident | `heavy_mutex_loop` (OOM guard) |
 | Hindsight down/wedged | `hindsight_loop` (`/health` + `database=connected`) |
-| **host memory pressure** | `health_loop` — MemAvailable < 3.0 GiB, swap > 80%, direct-reclaim > 3.0× |
+| **host memory pressure** | `health_loop` — MemAvailable < 3.0 GiB, swap > 80%, direct-reclaim > 3.0×. 🔴 The reclaim check is SUPPRESSED while any model is `loading`: a ~98 GiB cold load drives reclaim to ~16× by design (measured) and would otherwise page on every router restart. MemAvailable/swap still apply during a load |
 | **unit outages** | `health_loop` — llama-router, hermes-gateway, both on-demand sockets |
 | **watchdog death** | `OnFailure=` + `watchdog-heartbeat.timer` |
 
@@ -140,7 +140,7 @@ forever and never recover.
 
 | port | service | bind | auth |
 |---|---|---|---|
-| 9292 | llama-router (`--network host`, `--host 0.0.0.0`) | **`0.0.0.0`** | **none** — the api_key `unused-llama-router-direct` is a placeholder the router ignores |
+| 9292 | llama-router (`--network host`, `--host 127.0.0.1`) | `127.0.0.1` ✅ | none needed — **loopback only since 2026-08-25** (was `0.0.0.0` no-auth). ⚠️ Still IPv4-only; `localhost` consumers reach it by falling back from `::1`, exactly as before |
 | 3002 | Firecrawl (systemd socket → `127.0.0.1:3012`) | `127.0.0.1` + `[::1]` ✅ | none (loopback only) — **fixed 2026-08-25**, was `0.0.0.0` no-auth |
 | 9611 / 9610 / 9100 | watchdog / amdgpu exporter / node-exporter | **`0.0.0.0`** | none |
 | 3000 / 8428 | WhatsApp bridge / VictoriaMetrics | `127.0.0.1` ✅ | — |
@@ -155,7 +155,7 @@ Consequences while unfirewalled — any LAN device can: use the models unauthent
 - `ufw default deny incoming` + `ufw default allow outgoing` + **`ufw allow from 172.16.0.0/12`** + `ufw enable`. That third rule is mandatory: containers reach host services across the bridges (VictoriaMetrics → the exporters on 9100/9610/9611) and that traffic hits INPUT. Use the `172.16.0.0/12` supernet, not `-i br-…` rules — it covers all three bridges (`172.17`/`172.18`/`172.23`) and survives `br-*` names changing when a compose network is recreated.
 - No sshd is listening, so enabling ufw **cannot** lock you out.
 - **ufw will NOT cover Firecrawl :3002** — docker-published ports are DNAT'd ahead of filter INPUT. Fix in its compose (`127.0.0.1:3002:3002`), not in ufw.
-- 🟢 **UNBLOCKED 2026-08-25 — the router CAN now be rebound to `127.0.0.1`.** This previously said "do not", because OpenWebUI reached `:9292` via `host.docker.internal` from a bridge network. **OpenWebUI was deleted on 2026-08-25 and it was the only such consumer.** VERIFIED: the only remaining container with `extra_hosts` is VictoriaMetrics, and it scrapes 9100/9610/9611 — **never 9292**; every other consumer (Hermes, pi, pi-kalam, Hindsight, email digest) is a host process using `127.0.0.1`. This closes the largest remaining exposure in the table above (`:9292`, `0.0.0.0`, no auth). ⚠️ Not yet done — it needs a router restart (DS4 cold load 3–11 min), so schedule it deliberately.
+- ✅ **DONE 2026-08-25 — the router IS now bound to `127.0.0.1`.** This previously said "do not", because OpenWebUI reached `:9292` via `host.docker.internal` from a bridge network. **OpenWebUI was deleted on 2026-08-25 and it was the only such consumer.** VERIFIED: the only remaining container with `extra_hosts` is VictoriaMetrics, and it scrapes 9100/9610/9611 — **never 9292**; every other consumer (Hermes, pi, pi-kalam, Hindsight, email digest) is a host process using `127.0.0.1`. This closes the largest remaining exposure in the table above (`:9292`, `0.0.0.0`, no auth). **Applied and smoke-tested 2026-08-25** (DS4 cold load 2.5 min): `ss` shows `127.0.0.1:9292` only, `<LAN_IP>:9292` is refused, both `localhost` and `127.0.0.1` return 200, and real completions pass on both models. Rollback: `~/.config/systemd/user/llama-router.service.bak-20260825-pre-loopback`.
 
 ## Memory architecture
 

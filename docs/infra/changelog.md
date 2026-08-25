@@ -22,6 +22,64 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-25 (later 6) — 🟢 Router rebound to 127.0.0.1. Largest exposure CLOSED. Plus a load-guard fix to the new memory alert.
+
+**Observed:** `:9292` had **no auth** (the api_key is a placeholder the router
+ignores) on a host with **no firewall** (`ufw.conf ENABLED=no`), bound to
+`0.0.0.0` — any device on the LAN could drive the models. It was `0.0.0.0` only
+because OpenWebUI reached it via `host.docker.internal` from a bridge network,
+and OpenWebUI was deleted earlier today.
+
+**Pre-flight, BEFORE spending one of only 3 restarts/hour:**
+- **No non-loopback peer connected** to :9292 ✅
+- Sole remaining container with `extra_hosts` (victoriametrics) scrapes 9100/9610/9611, **never 9292** ✅
+- Consumer audit: Hermes (6 refs) + Hindsight on `127.0.0.1`; **pi (`~/.pi/agent/models.json`) and `automated-workflows/.env` use `localhost`** ⚠️
+- 🔴 **But `0.0.0.0` was ALREADY IPv4-ONLY** — there is no `[::]:9292`, so `::1` was already refused and those `localhost` consumers were ALREADY falling back to 127.0.0.1. **PROVEN before the change**: `localhost:9292 -> HTTP 200 via 127.0.0.1`. The rebind therefore does not change their behaviour at all. (Initially flagged this as an IPv6 risk like the Firecrawl socket; it is not — the bind was never dual-stack.)
+
+**Changed:** `~/.config/systemd/user/llama-router.service` — `--host 0.0.0.0` →
+`--host 127.0.0.1`, with the full rationale inline. `daemon-reload` + restart.
+
+**Smoke test:** (running process, not the file)
+- `ss`: `LISTEN 127.0.0.1:9292` — **no `0.0.0.0`** ✅ · child argv confirms `--host 127.0.0.1` ✅
+- loopback OK both spellings: `127.0.0.1` **200**, `localhost` **200** ✅
+- **LAN address REFUSED**: `<LAN_IP>:9292` → connection refused ✅ (valid from the host, unlike a firewall test — nothing is *listening* on that address, so routing is irrelevant)
+- DS4 cold load **~2.5 min**; gemma4-e4b served within seconds (it is deliberately first in models.ini) ✅
+- **REAL completions**, not just `/models`: gemma `'OK'` finish=stop; DS4 `'4'` finish=stop, 44 completion tokens ✅ ⚠️ DS4 at `max_tokens:8` returns EMPTY with finish=length — its reasoning eats the budget. That is not a failure; give it room before calling it broken.
+- watchdog probes both `probe_success=1` **with real `probe_latency` samples** (0.089 / 0.053) — not the `PROBE_GRACE_SECONDS` false-pass ✅
+- Hindsight `{"status":"healthy","database":"connected"}` ✅ · no spurious alerts during the restart ✅ · `NRestarts=0`, restart budget intact ✅
+
+**🔴 FIX: the new memory alert would have cried wolf on EVERY router restart.**
+Post-restart the watchdog read `mem_pressure=1` — driven **solely** by
+`reclaim_ratio 16.5` while MemAvailable was a healthy **10.88 GiB** and swap 50%.
+A ~98 GiB cold load forces massive direct reclaim **by design**; that is the cost
+of loading, not a sick host. Added `any_model_loading()` and suppressed **only**
+the reclaim check while any model is `loading` — MemAvailable and swap thresholds
+still apply, because those would be real trouble during a load. Fails **closed**
+(unknown router state does not suppress). Verified: `mem_pressure` back to 0,
+`reclaim 0.000`. *An alert that fires on routine operations is how alerting gets
+ignored — which is exactly how the 50 dropped alerts went unnoticed.*
+
+**🔬 THE BLEED EXPERIMENT BASELINE MOVED — the previously recorded verdict rule
+is now STALE.** A fresh DS4 load also dropped GTT **109.30 → 108.18 GiB**, and
+MemAvailable is now **10.43 GiB**, not the 6.9 the earlier prediction assumed.
+
+| restart | starting MemAvailable | settled at |
+|---|---|---|
+| 08-24 12:14 | 6.5 GiB | 3.8 GiB (−2.7) |
+| **08-25 12:04 (this one)** | **10.4 GiB** | **?** |
+
+**Revised verdict rule for tomorrow:**
+- settles **~3.8 GiB** → consumer **expands to fill** free memory. Worst case; hunt it.
+- settles **~7.2–7.7 GiB** → a **fixed ~2.7–3.2 GiB** consumer. Real but bounded, and findable via `--around 23:00`.
+- settles **~10 GiB** → **no bleed**; the earlier decay was the box simply filling space that is now genuinely free.
+
+⚠️ Outbox reminder id=23 was **already delivered** to Apple Reminders at 11:00
+carrying the OLD thresholds (3.8 / 6.1). It was deliberately **not** rewritten —
+never delete-and-recreate a Reminders item (sync-wedge), and a second reminder
+for one decision is clutter. **This table is the authority.**
+
+---
+
 ## 2026-08-25 (later 5) — One-shot outbox reminder for the bleed investigation. 🔴 Found a `curl -d` bug that truncated any alert containing `&`.
 
 **Changed:** a single **outbox reminder, id=23** — `tier=apple`, due

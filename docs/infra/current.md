@@ -1,6 +1,7 @@
 # AI Infra — Current State
 
-> **Last verified:** 2026-08-20 (from live system — router `:9292` after a clean
+> **Last verified:** 2026-08-25 — host RAM pressure work (Firecrawl socket-activated, sysctl tuned; see changelog).
+> Model/router state is UNCHANGED by that work and was last verified 2026-08-20 (from live system — router `:9292` after a clean
 > restart, `docker inspect` mounts, child argv, cron pins, and the running
 > watchdog process. **qwen3.8-27b evaluation CLOSED: DS4 is the daily driver
 > again, qwen3.8-27b-q4 is on-demand only, and the Q8_0 twin is deleted.**)
@@ -11,6 +12,8 @@
 ## Host
 
 - **Machine:** Beelink GTR9 Pro — AMD Ryzen AI MAX+ 395 (Strix Halo), Radeon 8060S (gfx1151, RDNA 3.5), 128 GB unified memory, Ubuntu (kernel 7.0.0-29).
+- **Host RAM pressure (2026-08-25):** GTT holds **109.11 GiB of 122.7 GiB**, leaving only **13.59 GiB** for the entire OS and every service. Process RSS totals just 7.1 GiB — **the memory is in GTT and does NOT show in `ps`**, so "nothing is using it" is a misread. 🔴 **The 103.3 GiB figure below (98.4 DS4 + 4.9 gemma) is STALE by +5.81 GiB** — it was measured at `ctx 131072` bare; DS4 now runs `ctx 262144 parallel 3` and gemma `ubatch-size 2048 parallel 4`, and compute buffers scale with ubatch × slots. Not yet decomposed — MEASURE, do not estimate. `ctx` is NOT the lever (DS4 KV ≈ 4.5 MiB/1k tokens).
+- **VM tuning:** `/etc/sysctl.d/99-llm-host-memory.conf` — `vm.swappiness=10`, `vm.vfs_cache_pressure=50` (2026-08-25). GTT is **unswappable**, so at the stock swappiness=60 the only reclaimable pages were the working sets of hermes / hindsight-daemon / llama-router — they were being paged out and had to fault back in before answering, which is what "Hermes is slow" actually was.
 - **VRAM model:** GTT memory model — BIOS UMA carveout at **512 MB minimum**, so the iGPU reaches ~124 GiB drawing from system RAM. `ttm.pages_limit=32505856`, `amd_iommu=off`, `amdgpu.dcdebugmask=0x12`, `amdgpu.lockup_timeout=10000,60000,10000,10000` in GRUB. `nogttspill` REMOVED (GTT is the memory model, not an overflow path).
 
 ## Router / serving
@@ -27,7 +30,7 @@
 | id | quant / size | residency | ctx | parallel | t/s (measured) | notes |
 |---|---|---|---|---|---|---|
 | `gemma4-e4b` | UD-Q4_K_XL + MTP, ~4.9 GiB | **resident** (load-on-startup) | 131072 | 4, kv-unified | ~114 | ALL aux work: Hermes compression/title-gen/curator/background_review, Hindsight retain+consolidation. sps 0.5, draft-mtp n=4, no-mmproj, reasoning-budget 8192 |
-| `deepseek-v4-flash` | UD-IQ3_XXS, ~98.4 GiB | **RESIDENT at boot** (2026-08-15) | **262144** (raised 2026-08-17) | 3, kv-unified | **19.48 decode / 268.98 prefill @pp2053** (MEASURED live 2026-08-12) | primary resident heavy model: Hermes/pi default, all 5 pi-kalam roles, Hindsight reflect, Open WebUI, email digest. sps 0.5, cache-reuse 256, no dspark sidecar (OOM-killed 2026-08-06). Cold load 3–11 min. Coexists only with gemma4-e4b (98.4+4.9 = 103.3 GiB < 120 GiB cap). `n_ctx_train` is **1048576** — we run 25% of it (was 12.5% at 131072) |
+| `deepseek-v4-flash` | UD-IQ3_XXS, ~98.4 GiB | **RESIDENT at boot** (2026-08-15) | **262144** (raised 2026-08-17) | 3, kv-unified | **19.48 decode / 268.98 prefill @pp2053** (MEASURED live 2026-08-12) | primary resident heavy model: Hermes/pi default, all 5 pi-kalam roles, Hindsight reflect, email digest. sps 0.5, cache-reuse 256, no dspark sidecar (OOM-killed 2026-08-06). Cold load 3–11 min. Coexists only with gemma4-e4b (98.4+4.9 = 103.3 GiB < 120 GiB cap). `n_ctx_train` is **1048576** — we run 25% of it (was 12.5% at 131072) |
 | **`qwen3.8-27b-q4`** | **UD-Q4_K_XL, ~34.2 GiB resident** | **on-demand — the ONLY swap target** | 262144 | 1, kv-unified | **31.3 / 32.6 decode** (MEASURED in prod 2026-08-19); 12.4 spec-off | `spec-type = draft-mtp`, **`spec-draft-n-max = 5`**. sha256 `3f227079…bc8b01e`. **Evaluated 2026-08-19 and REJECTED as a daily driver** — faster per token than DS4 but `parallel = 1` with reasoning always on, so it loses on real multi-caller work. MTP embedded (`blk.64.nextn.*`), no sidecar. The Q8_0 twin was deleted 2026-08-20 (section + 29 GB GGUF) |
 
 **Model swap:** `~/Dev/strix-halo-llm-stack/tools/swap-model.sh {ds4|qwen|status}` (path corrected 2026-08-10 — it is NOT `~/llama-stack/swap-model.sh`; that is runtime data and holds no scripts). `qwen` means **qwen3.8-27b-q4**. Both directions measured at **~23 s**, and the script refuses to load a second heavy model unless the first is CONFIRMED evicted. Image-gen (sd.cpp ~19 GiB GTT + 8.7 GiB host RAM) still requires an eviction wrapper.
@@ -38,7 +41,7 @@
 
 > **Residency is a runtime state, not config.** The table above is the *steady state after a router restart* — DS4 + gemma; qwen3.8-27b-q4 is `load-on-startup = false` and never comes up on its own. **As of 2026-08-20 the live state matches it again.** A manual `swap-model.sh qwen` or any request naming the unloaded Q4 legitimately changes residency; the watchdog heavy-model mutex evicts as designed. **That is normal operation — do not "fix" it and do not log it as drift.** Check live state with `curl -s localhost:9292/models | python3 -c "import json,sys;[print(m['id'],m['status']['value']) for m in json.load(sys.stdin)['data']]"` before drawing conclusions from this table.
 >
-> 🔴 **But a hand-loaded Q4 is not free of consequences:** while it is resident, DS4 is not, and every unattended caller pinned to DS4 (both check-in crons, Hermes `model.default`, OpenWebUI, the overnight cycle) will trigger a router autoload that evicts it. If two callers want two different heavy models at once, the mutex cannot save you — it guards CO-RESIDENCY, not CONTENTION (2026-08-19 21:37 OOM). Load the Q4 when you are at the keyboard, and expect to lose it at 21:35 or 23:00.
+> 🔴 **But a hand-loaded Q4 is not free of consequences:** while it is resident, DS4 is not, and every unattended caller pinned to DS4 (both check-in crons, Hermes `model.default`, the overnight cycle) will trigger a router autoload that evicts it. If two callers want two different heavy models at once, the mutex cannot save you — it guards CO-RESIDENCY, not CONTENTION (2026-08-19 21:37 OOM). Load the Q4 when you are at the keyboard, and expect to lose it at 21:35 or 23:00.
 
 ## Role → model mapping (aliases GONE — consumers pin concrete ids)
 
@@ -97,12 +100,39 @@
 | service | port | role |
 |---|---|---|
 | `llama-router.service` | 9292 | llama.cpp router (models) |
-| `llama-watchdog.service` | 9611 | GPU device-lost watchdog + per-model `llamacpp:*` metrics relay |
+| `llama-watchdog.service` | 9611 | **THE alerting engine** (2026-08-25) — GPU device-lost + metrics relay + **host memory pressure + systemd unit outages**, all to the Telegram **topic 5** of `<SUPERGROUP_CHAT_ID>`. Reads `/proc` directly, so it does NOT depend on VM/exporters |
+| `watchdog-heartbeat.timer` | — | dead-man check every 5 min — a **separate process** curling `:9611`, because a wedged watchdog still holds its port and still reads `active` |
 | `hindsight-daemon.service` | 9177 | Hermes memory daemon (bank `hermes`, embedded Postgres) |
 | `hermes-gateway.service` | — | messaging (Telegram/Slack/WhatsApp) |
-| `hermes-dashboard.service` | 9119 | web UI |
+| `hermes-dashboard-proxy.socket` | 9119 | **on-demand** dashboard (2026-08-25) — socket always listening; `hermes-dashboard.service` is **disabled at boot**, moved to `:9129`, wakes in ~1 s and stops after 15 min idle. 🔴 Its drop-in sets `Restart=no`; the base unit's `Restart=always` would undo every teardown |
+| `firecrawl-proxy.socket` | 3002 | **on-demand** Firecrawl activation (2026-08-25) — socket is always listening; the stack itself is DOWN until a request arrives and stops again after 30 min idle |
 
-Other listeners: SearXNG **:8888** (search). OpenWebUI **:3001** (via compose, points at :9292). WhatsApp bridge **:3000** (Hermes, self-chat mode). Grafana retired 2026-08-13.
+Other listeners: SearXNG **:8888** (search). WhatsApp bridge **:3000** (Hermes, self-chat mode). Grafana retired 2026-08-13.
+
+## Alerting (2026-08-25 — replaces Grafana rules)
+
+🔴 **Alerting had been 100% BROKEN and silent.** Enabling forum topics upgraded
+"Hermes Group" to a supergroup, re-issuing its chat id; `watchdog.env` still held
+the pre-migration `<OLD_GROUP_CHAT_ID>` and **50 alerts were dropped in 30 days**. Both
+ids still resolve via `getChat` with the same title, which is why it hid. The
+counter that would have caught it (`alerts_failed`) was watched by a **Grafana**
+rule that died 2026-08-13 — so the alerting outage started when its own
+supervision was removed. `telegram()` now **follows `migrate_to_chat_id`
+automatically** and retries HTML failures as plain text.
+
+| covered | by |
+|---|---|
+| device-lost / wedged model | `probe_loop` (+ recovery) |
+| two heavy models co-resident | `heavy_mutex_loop` (OOM guard) |
+| Hindsight down/wedged | `hindsight_loop` (`/health` + `database=connected`) |
+| **host memory pressure** | `health_loop` — MemAvailable < 3.0 GiB, swap > 80%, direct-reclaim > 3.0× |
+| **unit outages** | `health_loop` — llama-router, hermes-gateway, both on-demand sockets |
+| **watchdog death** | `OnFailure=` + `watchdog-heartbeat.timer` |
+
+⚠️ `hindsight-daemon` is deliberately absent from `HEALTH_UNITS` — its HTTP probe
+is strictly stronger than `is-active`. 🔴 The reclaim check is a **rate between
+samples**; the cumulative `pgscan_direct/pgsteal_direct` quotient would latch
+forever and never recover.
 
 ## Network exposure / bind addresses
 
@@ -111,9 +141,9 @@ Other listeners: SearXNG **:8888** (search). OpenWebUI **:3001** (via compose, p
 | port | service | bind | auth |
 |---|---|---|---|
 | 9292 | llama-router (`--network host`, `--host 0.0.0.0`) | **`0.0.0.0`** | **none** — the api_key `unused-llama-router-direct` is a placeholder the router ignores |
-| 3002 | Firecrawl API (docker `-p 0.0.0.0:3002`) | **`0.0.0.0`** | **none** |
+| 3002 | Firecrawl (systemd socket → `127.0.0.1:3012`) | `127.0.0.1` + `[::1]` ✅ | none (loopback only) — **fixed 2026-08-25**, was `0.0.0.0` no-auth |
 | 9611 / 9610 / 9100 | watchdog / amdgpu exporter / node-exporter | **`0.0.0.0`** | none |
-| 3001 / 3000 / 8428 | OpenWebUI / Grafana / VictoriaMetrics | `127.0.0.1` ✅ | — |
+| 3000 / 8428 | WhatsApp bridge / VictoriaMetrics | `127.0.0.1` ✅ | — |
 
 > **2026-08-13: Grafana retired.** The `grafana` service was removed from `~/observability/stack/docker-compose.yml` and its container deleted; **:3000 is now owned by the Hermes WhatsApp bridge** (`whatsapp.extra.bridge_port: 3000`). VictoriaMetrics (:8428) and node-exporter (:9100) remain. Grafana-provisioned Telegram alert rules are gone; the llama-watchdog's own Telegram alerts remain.
 
@@ -122,10 +152,10 @@ Other listeners: SearXNG **:8888** (search). OpenWebUI **:3001** (via compose, p
 Consequences while unfirewalled — any LAN device can: use the models unauthenticated; trigger a ~98 GiB DS4 autoload (**one unauthenticated request = host-memory DoS**); drive Firecrawl to fetch arbitrary internal URLs (SSRF pivot); read host/GPU telemetry. Scope is LAN-only behind NAT — confirm no port-forward/UPnP on the router.
 
 **Hardening (pending, not applied 2026-08-10):**
-- `ufw default deny incoming` + `ufw default allow outgoing` + **`ufw allow from 172.16.0.0/12`** + `ufw enable`. That third rule is mandatory: containers reach host services across the bridges (OpenWebUI → `host.docker.internal:9292`, VictoriaMetrics → the exporters) and that traffic hits INPUT. Use the `172.16.0.0/12` supernet, not `-i br-…` rules — it covers all three bridges (`172.17`/`172.18`/`172.23`) and survives `br-*` names changing when a compose network is recreated.
+- `ufw default deny incoming` + `ufw default allow outgoing` + **`ufw allow from 172.16.0.0/12`** + `ufw enable`. That third rule is mandatory: containers reach host services across the bridges (VictoriaMetrics → the exporters on 9100/9610/9611) and that traffic hits INPUT. Use the `172.16.0.0/12` supernet, not `-i br-…` rules — it covers all three bridges (`172.17`/`172.18`/`172.23`) and survives `br-*` names changing when a compose network is recreated.
 - No sshd is listening, so enabling ufw **cannot** lock you out.
 - **ufw will NOT cover Firecrawl :3002** — docker-published ports are DNAT'd ahead of filter INPUT. Fix in its compose (`127.0.0.1:3002:3002`), not in ufw.
-- Do **not** simply rebind the router to `127.0.0.1` — OpenWebUI reaches it via `host.docker.internal:9292` from a bridge network and would break.
+- 🟢 **UNBLOCKED 2026-08-25 — the router CAN now be rebound to `127.0.0.1`.** This previously said "do not", because OpenWebUI reached `:9292` via `host.docker.internal` from a bridge network. **OpenWebUI was deleted on 2026-08-25 and it was the only such consumer.** VERIFIED: the only remaining container with `extra_hosts` is VictoriaMetrics, and it scrapes 9100/9610/9611 — **never 9292**; every other consumer (Hermes, pi, pi-kalam, Hindsight, email digest) is a host process using `127.0.0.1`. This closes the largest remaining exposure in the table above (`:9292`, `0.0.0.0`, no auth). ⚠️ Not yet done — it needs a router restart (DS4 cold load 3–11 min), so schedule it deliberately.
 
 ## Memory architecture
 

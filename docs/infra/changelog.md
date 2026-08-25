@@ -22,6 +22,372 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-25 (later 5) — One-shot outbox reminder for the bleed investigation. 🔴 Found a `curl -d` bug that truncated any alert containing `&`.
+
+**Changed:** a single **outbox reminder, id=23** — `tier=apple`, due
+2026-08-26T09:00+01:00, "Decide: retire VictoriaMetrics?", with the analysis
+commands and the verdict rule in its description.
+
+```
+cd ~/Dev/automated-workflows
+.venv/bin/python -m workers.enqueue_reminder --title "..." \
+    --due "2026-08-26T09:00:00+01:00" --type task --priority normal
+```
+
+Drained every 15 min by the existing `reminder-scheduler` cron (Apple SSH
+primary → Google fallback), which lands it in Reminders.app by itself.
+
+⚠️ **A recurring `hermes cron` job was created first and then REMOVED** — that
+was over-engineering. This is a **one-shot investigation**: once the leak is
+found it gets fixed and VM + node-exporter + amdgpu-exporter are retired, so
+there is nothing for a daily job to keep doing. **The outbox reminder alone is
+the mechanism** — it creates the Apple Reminder without any scheduling of its
+own. The scratch script `~/.hermes/scripts/mem_bleed_report.sh` was deleted with
+it; `~/.hermes/scripts/` is back to its pre-existing 12 files and **no existing
+cron was touched** (all 8 still active).
+
+🔴 **BUG FOUND BY TESTING, AND KEPT — `notify-telegram.sh` used `curl -d text=...`.**
+`-d` form-encodes but does **NOT** URL-encode, so a bare `&` ends the field early
+and silently truncates the rest. HTML-escaped text is full of `&gt;`/`&lt;`, so
+this broke any message containing an escaped angle bracket — it surfaced as
+`Can't find end tag corresponding to start tag "pre"`. Fixed with
+`--data-urlencode "text=${MSG}"`. ⚠️ **The earlier test alerts passed only because
+none contained an `&`** — real alerts carrying command output or exception text
+would have been silently mangled. This fix is in the watchdog's own alert path
+and is unrelated to the reverted cron work.
+
+**Also confirmed:** `~/Dev/automated-workflows/.env` already holds the CORRECT
+post-migration `TELEGRAM_CHAT_ID=<SUPERGROUP_CHAT_ID>` with
+`TELEGRAM_BRIEFING_THREAD_ID=3` / `TELEGRAM_NIGHT_THREAD_ID=4` — so **only
+`watchdog.env` was missed** in the supergroup migration, and those thread ids
+**independently corroborate** Watchdog = topic **5**.
+
+**Smoke test:** outbox row 23 verified in `reminders.db` (`status=pending`,
+`tier=apple`, correct due) ✅ · description corrected in place **while still
+`pending`**, so nothing had synced to Apple — never delete-and-recreate a
+Reminders item, see the sync-wedge memory ✅ · `&`-truncation bug reproduced,
+fixed, and re-verified by a real send ✅ · cron list back to the original 8 ✅
+
+---
+
+## 2026-08-25 (later 4) — Memory ATTRIBUTION sampler installed to chase the unexplained bleed. 🔴 GTT is FLAT across it, so it is NOT the models.
+
+**Observed:** two facts that reframe the bleed, both from the VM series kept for
+exactly this purpose:
+
+1. 🔴 **GTT is FLAT across the bleed** — 109.11 GiB (morning) -> 109.30 GiB (evening), +0.19 over the day. **The loss is host-side, not the models.** This eliminates the largest suspect and cleanly separates the bleed from the +5.81 GiB GTT drift, which is a *different* open item.
+2. 🔴 **It is NOT an unbounded leak — it decays to a floor and stops.**
+
+```
+08-24 12:55  6.53   <- router restart 12:14
+08-24 17:55  5.93
+08-24 21:55  4.86
+08-24 22:55  3.80   <- after night-check-in 21:35 + overnight-tasks 23:00
+08-25 00:55  3.88   <- FLAT for ~9h
+08-25 08:55  3.61
+08-25 09:55  7.04   <- this session's changes, NOT a restart
+```
+
+Falls ~3.2 GiB, hits ~3.8, then sits flat all night. A true leak would not
+plateau. **The steepest drop brackets the 21:35 and 23:00 crons** — roughly
+1 GiB across that window, never returned. So: something ALLOCATES AND HOLDS,
+rather than something leaking continuously.
+
+⚠️ **Correction to an earlier framing:** the user recalled this as "the unknown
+10 GB". It is **two separate items** that happen to sum to ~9 GiB — the
+**~3.2 GiB bleed over ~10 HOURS** (the "10" is hours) and the **+5.81 GiB GTT
+drift**. Different mechanisms, different investigations.
+
+**Changed:** NEW `~/observability/stack/mem-sampler/`
+- `sample-memory.py` — one JSONL line per sample: full `/proc/meminfo` + `/proc/vmstat` subsets, GTT/VRAM, **per-process RSS+swap aggregated by comm**, and the router's model states (so a swap/restart is visible and cannot be mistaken for a bleed). Self-rotating at 64 MB.
+- `analyze-memory.py` — diffs two samples and RANKS what grew. 🔴 Its accounting deliberately **excludes `Cached`/`SReclaimable`** (reclaimable, so they do not remove memory from MemAvailable) and prints an **UNEXPLAINED residual**, so a non-attributable bleed shows up as such instead of hiding behind a plausible-looking list. Flags: `--hours N`, `--around HH:MM --span N` to bracket a cron.
+- `mem-sampler.{service,timer}` — every 5 min, `Nice=10` + `IOSchedulingClass=idle`.
+
+**Why this and not VictoriaMetrics:** VM proves *that* memory vanished; it has no
+per-process or slab attribution, which is exactly where the morning's diagnosis
+had to stop.
+
+**Cost:** 4.3 KB/sample -> **~1.2 MB/day**, capped at 64 MB (~17 days).
+
+**Smoke test:**
+- manual run wrote a valid sample; timer `enabled` + firing ✅
+- captured correctly: MemAvailable 6.91 GiB, GTT 109.30, SUnreclaim 863 MiB, RSS total 5.48 GiB across 164 procs, swap 1806 MiB, all 3 model states ✅
+- analyzer ran end-to-end over a 1-min window ✅ — **which usefully calibrates the noise floor at ~0.04 GiB, so a 3.2 GiB signal will be unmistakable**
+- `--around` with no nearby samples fails cleanly ("window collapsed"), `--hours` degrades to the available span ✅
+
+**🔬 THE EXPERIMENT NOW RUNNING.** This session's reclaim left the box at
+**~6.9 GiB instead of the usual post-restart 6.5**, so tonight's crons run against
+a higher baseline. The outcome discriminates without further work:
+
+| tomorrow settles at | conclusion |
+|---|---|
+| **~3.8 GiB** (same floor) | a real consumer that expands to fill free memory — hunt it with `analyze-memory.py --around 23:00` |
+| **~6.1 GiB** (2.3 higher) | there is no bleed; the floor simply tracks free memory and moved up with what we reclaimed |
+
+**Either answer clears VictoriaMetrics + node-exporter + amdgpu-exporter to be
+retired** (~269 MiB + 233 MB disk). Run tomorrow:
+`~/observability/stack/mem-sampler/analyze-memory.py --hours 14`
+
+---
+
+## 2026-08-25 (later 3) — 🔴 ALERTING WAS DEAD FOR WEEKS (chat migrated). Fixed, wired to a topic, and extended to memory + unit + watchdog-death alerts.
+
+**Observed:** user asked to retire VictoriaMetrics/Grafana and route alerts to a
+Telegram topic. Two prior beliefs were wrong, and one live defect was found:
+
+1. **Grafana was ALREADY retired** (2026-08-13). Nothing to retire.
+2. **amdgpu-exporter cannot alert.** It is an *exporter* — metrics on `:9610`, no thresholds, no sender. The alerting engine is **llama-watchdog**, which already had Telegram, `Restart=always` and four loops.
+3. 🔴 **The watchdog's Telegram alerting had been 100% broken.**
+
+```
+Bad Request: group chat was upgraded to a supergroup chat
+parameters: {"migrate_to_chat_id": <SUPERGROUP_CHAT_ID>}
+```
+
+**50 dropped alerts in 30 days.** Enabling forum topics upgraded "Hermes Group"
+from `group` to `supergroup`, which **re-issues the chat id**; `watchdog.env`
+still held the pre-migration `<OLD_GROUP_CHAT_ID>`. Confirmed both ids resolve via
+`getChat` with the SAME title — which is exactly why it was invisible.
+
+🔴 **The meta-failure: a dropped alert cannot alert about itself.** The watchdog
+logged a WARN and incremented `alerts_failed`, but the Grafana rule watching that
+counter **died with Grafana on 08-13**. So the alerting outage began roughly when
+its own supervision was removed, and nothing said a word — **including through
+the memory-pressure incident earlier this same day.**
+
+Second, independent defect (2026-08-24): `can't parse entities: Unsupported start
+tag "urlopen"` — alert text interpolates exception strings, and one containing
+`<urlopen ...>` broke `parse_mode: HTML`.
+
+**Changed:**
+1. `watchdog.env` — `TELEGRAM_CHAT_ID` → **`<SUPERGROUP_CHAT_ID>`**; new **`TELEGRAM_TOPIC_ID=5`** (topic "Watchdog", the MIDDLE number of `t.me/c/4310722769/5/8943`).
+2. `watchdog.py` `telegram()` — **self-healing**: follows `migrate_to_chat_id` on migration errors and latches it, and retries as plain text when HTML is rejected. Both failures now recover instead of dropping.
+3. `watchdog.py` — new **`health_loop()`** (5th thread): host memory pressure + systemd unit liveness, same debounce contract as `hindsight_loop` (one alert down, one up).
+4. NEW `notify-telegram.sh` + `telegram-alert@.service` (`OnFailure=` on llama-watchdog) + `watchdog-heartbeat.{service,timer}` (5 min).
+5. New metrics: `llama_watchdog_mem_available_bytes`, `_swap_used_ratio`, `_reclaim_ratio`, `_mem_pressure`, `_unit_up{unit=}`.
+
+**Thresholds are MEASURED on this box (2026-08-25), not guessed** — healthy sat
+at 5–7 GiB MemAvailable, the reported-bad state was 3.6–3.8 GiB:
+
+| check | threshold | measured basis |
+|---|---|---|
+| MemAvailable | < 3.0 GiB | healthy 5–7, bad 3.6–3.8 |
+| swap | > 80% | ran 70–98% for two weeks |
+| direct reclaim | > 3.0× | **6.0× while thrashing, ~1.0 healthy** |
+
+🔴 **The reclaim figure MUST be a rate, not the cumulative quotient.**
+`pgscan_direct`/`pgsteal_direct` are monotonic, so their lifetime ratio would
+have latched at 6.0× forever after today and never recovered. `health_loop`
+diffs consecutive samples and ignores intervals with < `RECLAIM_MIN_SCAN` pages.
+
+**Units watched:** `llama-router`, `hermes-gateway`, `firecrawl-proxy.socket`,
+`hermes-dashboard-proxy.socket`. ⚠️ `hindsight-daemon` is deliberately EXCLUDED —
+`hindsight_loop` already probes `/health` requiring `database=connected`, which
+also catches a running-but-wedged daemon that `is-active` would call "active".
+
+**Watchdog death needs TWO mechanisms** (it cannot alert on its own death):
+`OnFailure=` catches systemd giving up; the 5-min heartbeat timer is a **separate
+process** curling `:9611`, because a wedged watchdog still holds its port and
+still reads `active`.
+
+**Smoke test:** (all real sends into the topic)
+- shell path `notify-telegram.sh` → delivered ✅
+- Python path `telegram()` → delivered ✅
+- **Aug-24 HTML bug reproduced verbatim** (`<urlopen error ...>`) → rejected, auto-resent as plain text, `alerts_failed` stayed **0** ✅
+- heartbeat with watchdog STOPPED → fired ✅; with it healthy → **silent** ✅
+- `telegram-alert@` unit → `Result=success` ✅
+- new metrics live on `:9611`; all pre-existing metrics intact ✅
+- health logic unit-tested standalone first: `unit_active()` true for 4 real units / false for a fake one; `reclaim_ratio` correctly **0.000** on a healthy box ✅
+
+**VictoriaMetrics / node-exporter / amdgpu-exporter: KEPT for now**, by explicit
+decision. They feed nothing (0 queries in 7 d) and would reclaim ~269 MiB + 233 MB
+disk, but VM's history is the only instrument for the **still-unexplained
+~3.2 GiB / 10 h memory bleed**. 🔴 **Retire them only once that is closed** — and
+note the alerting above no longer depends on them at all (it reads `/proc`
+directly), so retirement is now purely a diagnostics decision.
+
+---
+
+## 2026-08-25 (later 2) — Open WebUI REMOVED completely. 🟢 This UNBLOCKS rebinding the router to 127.0.0.1.
+
+**Observed:** user confirmed they do not use it. Usage data agreed — **1 request
+in 7 days, and that was an internal huggingface call, not a user visit.** It had
+been declined for socket activation earlier the same day (38 MiB not worth the
+machinery); removing it outright is strictly better.
+
+**Changed:** `docker compose down`; image deleted; `~/openwebui/` deleted;
+references cleaned from `~/.pi/agent/AGENTS.md`, `~/.pi/agent/skills/docker/SKILL.md`,
+`docs/infra/current.md`, and **both** `models.ini` copies.
+
+**Reclaimed:** 38 MiB RAM and **~7 GB disk** — 5.09 GB image + 889 MB `data/`
+(of which **888 MB was regenerable sentence-transformers cache**; real user data
+was 776 KB) + an 843 MB backup tarball.
+
+⚠️ **`~/openwebui/.git` was 805 MB** — the `data.bak-20260801-pre-0.11.0.tar.gz`
+had been **committed into the repo** (804.5 MB blob). Worth remembering before
+committing backup tarballs anywhere else on this box.
+
+**Backups kept** (user data was tiny; deleting it outright was not worth it):
+- `~/openwebui-userdata-final-20260825.tar.gz` — **61 KB**, verified `PRAGMA integrity_check = ok`, 2 chats / 1 user
+- `~/openwebui-config-final-20260825.tar.gz` — 2.8 KB, compose + .env
+Delete with `rm ~/openwebui-*-final-20260825.tar.gz` when confident.
+
+**🟢 THE REAL WIN — a security constraint just lifted.** `current.md` carried
+"do **not** rebind the router to `127.0.0.1` — OpenWebUI reaches it via
+`host.docker.internal:9292` from a bridge network and would break."
+**OpenWebUI was the ONLY such consumer.** VERIFIED after removal:
+- the only remaining container with `extra_hosts` is `victoriametrics`, and its scrape targets are `9100`, `9610`, `9611` — **never `9292`**
+- every other consumer (Hermes, pi, pi-kalam, Hindsight, email digest) is a **host process** already using `127.0.0.1`
+
+So `:9292` — **`0.0.0.0`, no auth, the largest exposure in the network table** —
+can now be closed. ⚠️ **NOT done in this session**: it needs a router restart
+(DS4 cold load 3–11 min). Schedule it deliberately.
+
+**Smoke test:**
+- `ai-stack` network **intact** with victoriametrics still attached (it is `external: true`, so `compose down` correctly left it alone) ✅
+- all 4 remaining containers up; all 4 VM scrape targets `up=1` ✅
+- `:3001` free ✅
+- runtime `models.ini` **inode preserved** (12714493 before and after) and `diff` vs the repo template **clean** ✅ — comment-only edits, and models.ini is parsed only at router startup, so the running router is unaffected
+- router lineup unchanged: DS4 loaded, gemma4-e4b loaded, qwen3.8-27b-q4 unloaded ✅
+
+**Deliberately NOT changed:** `tools/end-qwen-trial.sh` and older changelog
+entries still name OpenWebUI. Those are **accurate historical records** — it *was*
+a consumer then. Do not rewrite history to remove it.
+
+---
+
+## 2026-08-25 (later) — Survey of remaining always-on services; hermes-dashboard made on-demand. Yield is SMALL — the real levers are still open.
+
+**Observed:** after the Firecrawl work, swept every running service for the same
+treatment. **Most are structurally disqualified** — being idle is not sufficient,
+the service must be *pull-activated*:
+
+| service | mem | why it CANNOT be socket-activated |
+|---|---|---|
+| `llama-router` | 1.56 GiB | the models themselves |
+| `hindsight-daemon` | 806 MiB | called on every Hermes turn |
+| `hermes-gateway` | 473 MiB | must listen for Telegram/Slack/WhatsApp |
+| `victoriametrics` | 228 MiB | **scrapes on a schedule — down = permanently lost metrics** |
+| `searxng` | 30 MiB | 78 searches in 7 d, actively used |
+| node-exporter / amdgpu-exporter / llama-watchdog | 52 MiB | must be scrapeable; watchdog probes every 60 s |
+
+🔴 **The disqualifier is push-vs-pull, not idleness.** VictoriaMetrics looks idle
+but originates its own scrapes; socket-activating it would silently punch holes
+in the metric history — the exact series used to diagnose this incident.
+
+Only two real candidates:
+
+| service | mem | usage (7 d) | verdict |
+|---|---|---|---|
+| `hermes-dashboard` | **246 MiB** | **0 HTTP requests** | ✅ converted |
+| `open-webui` | 38 MiB | 1 (internal HF call, not a user visit) | ❌ **declined** |
+
+**open-webui declined deliberately:** 38 MiB does not justify another socket +
+proxy + drop-in on a stack the user already finds fragile, and it is a container
+(cold start ~10-20 s, noticeable on a UI vs the dashboard's 2 s). Revisit only if
+it grows.
+
+**Changed:**
+1. NEW drop-in `~/.config/systemd/user/hermes-dashboard.service.d/on-demand.conf` — `--port 9129`, **`Restart=no`**. A **drop-in, not a base-unit edit**, so it survives Hermes regenerating the unit (see `hermes_systemd_user_services` memory).
+2. `hermes-dashboard.service` **disabled** at boot (socket now owns lifecycle).
+3. NEW `hermes-dashboard-proxy.socket` — `127.0.0.1:9119` + `[::1]:9119`.
+4. NEW `hermes-dashboard-proxy.service` — `ExecStartPre` start + readiness wait, `systemd-socket-proxyd --exit-idle-time=15min 127.0.0.1:9129`, `ExecStopPost` stop.
+
+🔴 **`Restart=no` is load-bearing** — the base unit is `Restart=always`, which
+would have immediately undone every idle teardown.
+
+**Expected:** 246 MiB back; dashboard still answers on `:9119` unchanged.
+
+**Smoke test:**
+- Verified gateway does **not** depend on dashboard before touching it (`hermes-gateway` has no Requires/Wants/BindsTo on it) ✅
+- cold wake `http://localhost:9119/` → **HTTP 200 at +1 s** ✅
+- warm: **0.009 s** ✅
+- idle auto-stop verified with a temporary 20 s drop-in, then removed: dashboard → `inactive`, socket re-armed ✅
+- loop closes: re-wake after auto-stop → **HTTP 200 at +1 s** ✅
+- 15 min timer restored, `0` drop-ins remaining ✅
+- MemAvailable **7.1 → 7.2 GiB** (dashboard was already down for part of the baseline)
+
+**⚠️ Honest yield:** total reclaimed across BOTH on-demand conversions is
+~2.3 GiB, and this second pass contributed only 246 MiB of it. **The two open
+items from the earlier entry (+5.81 GiB GTT drift, ~3.2 GiB / 10 h restart-bleed)
+are 10-40× larger than anything left to socket-activate.** Do not keep mining
+this seam; chase those instead.
+
+---
+
+## 2026-08-25 — Host RAM pressure: Firecrawl made socket-activated on-demand + swappiness tuned. 🔴 GTT is 109.11 GiB, not the documented 103.3.
+
+**Observed:** user reported Hermes replies stalling, "eased then came back".
+Not a rogue process — **total process RSS was only 7.1 GiB**; the memory is in
+GTT, which does not appear in `ps` at all.
+
+| | |
+|---|---|
+| Host RAM | 122.7 GiB |
+| **GTT (unswappable)** | **109.11 GiB** |
+| Left for entire OS + services | **13.59 GiB** |
+| MemAvailable at report time | **3.8 GiB** |
+
+Thrash signature: `pgscan_direct` 6,668,451 vs `pgsteal_direct` 1,110,675 —
+direct reclaim scanned **6 pages per 1 freed (16.7% efficiency)**, i.e. every
+allocation stalling on memory that is not there. 901,885 major faults. Swap ran
+**70–98% full for two weeks** (7.14 of 7.3 GiB on 08-19/08-20). Page cache
+squeezed to 1.7 GiB.
+
+The user's "eased then came back" is literally in the VictoriaMetrics series —
+a router restart buys ~3.3 GiB which then bleeds off over ~10 h:
+```
+08-24 11:46  3.7 GiB   <- struggling
+08-24 12:46  6.5 GiB   <- router restarted 12:14
+08-24 14:46  7.0 GiB   <- the "eased" window
+08-24 21:46  5.5 GiB
+08-24 22:46  3.8 GiB   <- after 21:35 check-in + 23:00 overnight cycle
+08-25 08:46  3.6 GiB   <- back to struggling
+```
+
+**Firecrawl was holding ~2.06 GiB across 5 containers with ZERO scrape/crawl
+requests in 72 h**, and had become self-inflicting — its own workers were
+logging `Can't accept connection due to RAM/CPU load` / `WORKER STALLED` against
+the pressure they were contributing to.
+
+**Changed:**
+1. `~/firecrawl/.env` — `PORT=3002` → `PORT=3012` (host port; app still 3002 in-container).
+2. `~/firecrawl/docker-compose.yaml` — published port bound to `127.0.0.1:` (**also closes the `0.0.0.0` no-auth exposure** flagged in `current.md`); all 5 `restart: unless-stopped` → `restart: "no"` with an explanatory comment block.
+3. NEW `~/.config/systemd/user/firecrawl-proxy.socket` — dual-stack `127.0.0.1:3002` + `[::1]:3002`, `Accept=no`.
+4. NEW `~/.config/systemd/user/firecrawl-proxy.service` — `ExecStartPre` `docker compose up -d` + readiness wait, `ExecStart` `systemd-socket-proxyd --exit-idle-time=30min 127.0.0.1:3012`, `ExecStopPost` `docker compose stop`.
+5. NEW `/etc/sysctl.d/99-llm-host-memory.conf` — `vm.swappiness` 60 → **10**, `vm.vfs_cache_pressure` 100 → **50**.
+
+**Expected:** ~2 GiB returned; Firecrawl reachable on demand with no config
+change in Hermes; the kernel stops paging out the working sets of the
+latency-sensitive daemons (GTT is unswappable, so at swappiness=60 the ONLY
+reclaimable pages were hermes/hindsight/llama-router — Hermes had 130 MiB and
+Hindsight 380 MiB swapped out, which is precisely the "slow reply" mechanism:
+the daemon must fault back in before it can answer).
+
+**Refs:** `systemd-socket-proxyd(8)` `--exit-idle-time`; systemd 259 on this host.
+
+**Smoke test:** (verified against running processes/containers, not files)
+- sysctl on the **running kernel**: `/proc/sys/vm/swappiness` = 10, `vfs_cache_pressure` = 50 ✅
+- cold wake through the socket: 0 containers → POST `/v1/scrape` on `:3002` → **11 s** → `success:true` markdown, 5 containers up ✅
+- warm request: **0.096 s** ✅
+- port mapping confirmed `3002/tcp -> 127.0.0.1:3012`; `ss` shows only `127.0.0.1:3002`, `[::1]:3002`, `127.0.0.1:3012` — **no `0.0.0.0` listener** ✅
+- **idle auto-stop verified for real, not assumed** — temporary drop-in `--exit-idle-time=20s`, then removed: containers → 0 automatically, service `inactive`, socket re-armed `active` ✅
+- **loop closes**: after the auto-stop, a fresh scrape re-woke it in **10 s** ✅
+- 30 min timer restored, `0` drop-ins remaining ✅
+- 🔴 **IPv6 trap caught during testing:** `localhost` resolves to `::1` FIRST here and Hermes' `FIRECRAWL_API_URL=http://localhost:3002`. IPv4-only *appeared* to work solely because clients retry after `::1` refuses. Added `ListenStream=[::1]:3002`; re-verified cold over `http://localhost:3002` ✅
+- Hermes timeout headroom checked before building: web scrape 60 s, browser session-create 30 s (the 5 s/10 s paths are teardown-only and run warm) — all clear of the 12 s cold start ✅
+- **MemAvailable 5.1 → 6.8 GiB** with Firecrawl idle.
+
+**Rollback:** `~/firecrawl/docker-compose.yaml.bak-20260825-pre-ondemand`,
+`~/firecrawl/.env.bak-20260825-pre-ondemand`; `systemctl --user disable --now
+firecrawl-proxy.socket`; `rm /etc/sysctl.d/99-llm-host-memory.conf`.
+
+**🔴 STILL OPEN — two unresolved items, do not consider this closed:**
+1. **GTT drift +5.81 GiB.** `current.md` asserts 103.3 GiB (98.4 DS4 + 4.9 gemma); actual is **109.11**. The 98.4 figure was measured at `ctx 131072` bare, but DS4 now runs `ctx 262144 parallel 3` and gemma runs `ubatch-size 2048 parallel 4` — compute buffers scale with ubatch × slots. **Not decomposed; needs a measured teardown, not an estimate.** Note `ctx` is NOT the lever (DS4 KV ≈ 4.5 MiB/1k tokens, so 131072→262144 cost only ~0.6 GiB).
+2. **The ~3.2 GiB / 10 h bleed** after a router restart (7.0 → 3.8 GiB) is **unexplained**. Firecrawl was not the cause — it was flat and idle throughout.
+
+---
+
 ## 2026-08-20 (later 6) — Trial ENDED, DS4 resident again. 🔴 CORRECTION: the "25×" np=1→np=2 claim was WRONG; the real gain is ~36%.
 
 **Changed:** ran `tools/end-qwen-trial.sh` — reverted the two

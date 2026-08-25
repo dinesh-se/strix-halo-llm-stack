@@ -22,6 +22,76 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-25 (later 7) — Telegram topics were never rotating: `session_reset.mode` none → idle
+
+**Observed:** Responses in the **Morning Briefing** and **Night Plan** topics were
+far slower than **General**, and sometimes never arrived. Not a Telegram problem —
+Hermes keys one session per `chat_id:thread_id`, so each topic is an independent
+persistent conversation, and `session_reset.mode` was `none` (Hermes changed this
+default from `both` in July 2026), so nothing ever rotated except by hand.
+
+Measured over 7 days from `~/.hermes/state.db` + the llama-router journal:
+
+| | General (t1) | Morning Briefing (t3) | Night Plan (t4) |
+|---|---|---|---|
+| sessions in 7 d | **37** (median life 2.5 h) | 3 (one alive 5 d) | 2 (median life **49.6 h**) |
+| current prompt | resets to ~28k | **151,920 tok** | **115,870 tok** |
+| median turn | **349 s** | 631 s | **945 s** |
+| p90 turn | 1188 s | **2520 s** | 2017 s |
+| turns needing >20k re-prefill | 23 % | 27 % | **47 %** |
+| median latency, cold turn | 564 s | **1460 s** | 1120 s |
+
+Worst observed single prefills: `96,058 tok / 816.8 s`, `97,504 / 746.7`,
+`98,355 / 726.3`, `83,258 / 581.4`. **~15.5 GPU-hours** of prefill in the window.
+
+Two compounding causes. (a) Session age — the user resets General constantly and
+the topics never; bigger prompt costs more on EVERY turn, which is why even warm
+turns there are 2–3× slower. (b) Slot starvation — DS4 runs `parallel = 3` but the
+llama-watchdog 60 s probe permanently owns slot 2 (**6,534** requests at 97 tok avg,
+vs 862 / 1,184 real-conversation requests on slots 0 / 1), so every topic + the DM +
+pi + cron agents contend for **two** slots. Aggravator: `cache-reuse = 256` is set for
+DS4 but the server logs `cache_reuse is not supported by this context, it will be
+disabled`, so there is no partial reuse to fall back on when compaction rewrites the
+prefix (thread 3 already has 125 compacted messages — it sits above the
+`compression.threshold: 0.5` × 262144 = 131k line permanently).
+
+**Changed:** `~/.hermes/config.yaml:586` `session_reset.mode: none` → `idle`.
+One-line diff; `idle_minutes` was already `1440` and `at_hour` already `4`, both left
+alone. Backup: `~/.hermes/config.yaml.bak-20260825-pre-session-reset`.
+Restarted `hermes-gateway.service` (config is NOT hot-reloaded — `GatewayConfig` is
+built at startup). Nothing in `~/hermes-agent` touched.
+
+**Expected:** every topic now rotates on its own 24 h idle clock instead of only the
+one the user resets by hand, so Morning Briefing / Night Plan start each day near the
+~28k baseline instead of 120–150k. Should remove the "even warm turns are slow" half
+of the problem. Does NOT address slot starvation (b) — that needs DS4 `parallel` 3 → 4,
+which is deferred: host RAM is at 112/122 GiB with 10 GiB available.
+Resets are non-destructive — transcripts stay in `state.db`
+(`sessions.retention_days: 90`, `auto_prune: false`) and stay session-searchable.
+
+**Refs:** `gateway/config.py:540-600` (valid modes `none`/`idle`/`daily`/`both`),
+`gateway/session.py:2414` (`_is_session_expired`, evaluated **per session entry**),
+`gateway/run.py:13865` (`_session_expiry_watcher`, 60 s initial delay then 300 s).
+
+**Smoke test:** PASSED, on the running process.
+1. `SessionResetPolicy.from_dict()` against the edited YAML → `idle 1440 4 notify=True`.
+2. Predicted from `gateway_routing` which entries exceed 24 h idle: the telegram DM
+   (182.4 h) and whatsapp DM (280.1 h); the four topics (2.1 / 4.5 / 13.7 / 2.0 h) should
+   be kept.
+3. First watcher tick after restart logged exactly that:
+   `12:44:22 Session expiry: 2 sessions to finalize (telegram:1, whatsapp:1)`.
+   Under `mode: none` `_is_session_expired` returns False unconditionally and this line
+   can never appear, so it is proof the running process loaded the new policy.
+4. Confirmed in the DB: `expiry_finalized=True` on exactly those two, `False` on all
+   four topics.
+
+⚠️ **First attempt at step 3 was a false pass** — `until grep -q "Session expiry" gateway.log`
+matched **June 2026** lines (from before the July default change) and exited instantly.
+On an append-only log a bare grep is not a smoke test; scope to lines after the restart
+timestamp. Logged as gotcha #16.
+
+---
+
 ## 2026-08-25 (later 6) — 🟢 Router rebound to 127.0.0.1. Largest exposure CLOSED. Plus a load-guard fix to the new memory alert.
 
 **Observed:** `:9292` had **no auth** (the api_key is a placeholder the router

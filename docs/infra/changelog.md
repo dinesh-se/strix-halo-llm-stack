@@ -22,6 +22,77 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-25 (later 8) — DS4 ctx 262144 → 131072 (user request). Returned 2.58 GiB of GTT; `ctx` IS a memory lever after all.
+
+**Observed:** User asked to take DS4 down to 128k. Context on this box had been
+raised 131072 → 262144 on 2026-08-17. Prior belief recorded in `current.md` was
+"`ctx` is NOT the lever (DS4 KV ≈ 4.5 MiB/1k tokens)", which predicts only ~0.6 GiB
+back from halving. That turned out to be wrong — see Smoke test.
+
+**Changed:** three-way sync, all to `131072`:
+- `~/llama-stack/config/models.ini` `[deepseek-v4-flash] ctx-size` (runtime copy)
+- `~/Dev/strix-halo-llm-stack/config/models.ini` (repo template, kept identical)
+- `~/.hermes/config.yaml:4` `model.context_length`
+- `~/.pi/agent/models.json:20` DS4 `contextWindow`
+
+Both `models.ini` copies written **inode-preserving** (gotcha #12) — inodes 12714493
+and 9046916 unchanged, `diff` clean. Section-scoped edit: a bare
+`ctx-size = 262144` replace would ALSO have hit `[qwen3.8-27b-q4]`, which is
+deliberately left at 262144. `gemma4-e4b` untouched at 131072, and
+`auxiliary.compression.context_length: 131072` belongs to gemma4 (gotcha #10) — also
+untouched. pi-kalam pins model **ids** only and inherits the window from pi's
+`models.json`; nothing to change there.
+Restarted `llama-router` (gotcha #11 — models.ini is parsed only at router startup)
+then `hermes-gateway`. Backups: `models.ini.bak-20260825-pre-ds4-ctx128k`,
+`config.yaml.bak-20260825-pre-ctx128k`, `models.json.bak-20260825-pre-ctx128k`.
+
+**Expected:** free GPU memory on a host sitting at 9.8 GiB MemAvailable, and cap the
+worst-case re-prefill. 🔴 **Side effect that is bigger than the ctx change itself:**
+Hermes compacts at `compression.threshold` (0.5) × `model.context_length`, so its
+compaction point moved from ~131k to **~65.5k tokens**. Conversations now compact
+~2× as often, and each compaction rewrites the prefix = unavoidable full re-prefill.
+`compression.threshold: 1.0` would restore the old point at the new ctx.
+
+**Refs:** none external — local measurement only.
+
+**Smoke test:** PASSED, on the running process.
+1. Child argv (NOT the file, per gotcha #11):
+   `--model /models/ds4/... --ctx-size 131072 --parallel 3 --kv-unified`.
+2. `[57817] load_model: initializing, n_slots = 3, n_ctx_slot = 131072, kv_unified = 'true'`
+   — confirms `n_ctx_slot == ctx-size` under kv-unified (NOT split across slots), so
+   each of the 3 slots still sees 131072, comfortably above Hermes' 64k
+   `MINIMUM_CONTEXT_LENGTH` floor.
+3. Ready payload: `"n_ctx":131072,"n_ctx_train":1048576`.
+4. Real completion (not `/health`, which lies on a wedged server): "17 + 25" → `42`
+   with `reasoning_content` intact, `finish_reason: stop`.
+5. gemma4-e4b unaffected: `n_slots = 4, n_ctx_slot = 131072`, answers `ok`.
+6. llama-watchdog: real `probe_latency_seconds` samples present for BOTH models
+   (DS4 0.0873 s, gemma4 0.0189 s), `probe_success 1`, `probe_failures_total 0` —
+   satisfies the `PROBE_GRACE_SECONDS` false-pass guard (a `probe_success` with no
+   latency sample proves nothing).
+7. Gateway back up clean, telegram + whatsapp connected.
+8. DS4 cold load 3 min 9 s.
+
+**MEASURED memory:** GTT **108.65 → 106.07 GiB (−2.58)**, MemAvailable
+**9.84 → 13.33 GiB (+3.49)**. That is ~4× the ~0.6 GiB a KV-only model predicts, so
+**compute buffers scale with ctx too, not just with ubatch × slots.** The standing
+"`ctx` is NOT the lever" note in `current.md` was wrong and has been corrected.
+
+⚠️ **Follow-up risk, not yet actioned:** the Morning Briefing topic's session carried
+`last_prompt_tokens = 151,920`, which now EXCEEDS the 131,072 ceiling. The lower
+compaction point should keep it clear going forward, but that specific session should
+be reset rather than resumed. Flagged to the user; not reset unilaterally (it is their
+conversation).
+
+⚠️ Two false-pass traps hit while verifying, both caught:
+(a) a wait loop matching `model loaded` fired on **gemma4**'s line while DS4 was still
+loading — re-armed on the DS4-specific `n_slots = 3`;
+(b) `awk '$0>="<timestamp>"' gateway.log | grep Traceback` surfaced tracebacks from
+**2026-06-03**, because untimestamped continuation lines sort above a date string.
+Filter on timestamped lines only, or grep the line numbers and inspect context.
+
+---
+
 ## 2026-08-25 (later 7) — Telegram topics were never rotating: `session_reset.mode` none → idle
 
 **Observed:** Responses in the **Morning Briefing** and **Night Plan** topics were

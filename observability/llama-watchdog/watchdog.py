@@ -986,6 +986,28 @@ def unit_active(unit: str) -> bool:
         return True     # fail-OPEN: never page because systemctl itself hiccuped
 
 
+def any_model_loading() -> bool:
+    """True while the router is pulling a model into memory.
+
+    🔴 A cold load of a ~98 GiB model forces massive direct reclaim by design —
+    MEASURED at 16.5x during a DS4 load on 2026-08-25 while MemAvailable was a
+    perfectly healthy 10.9 GiB. That is the COST of loading, not a sick host, and
+    alerting on it would page on every single router restart. An alert that cries
+    wolf on routine operations is how alerting gets ignored.
+
+    Only the RECLAIM check is suppressed — MemAvailable and swap thresholds still
+    apply during a load, because those would represent real trouble.
+    """
+    status, body = http(f"{ROUTER}/models", timeout=10)
+    if status != 200:
+        return False          # fail-CLOSED: unknown means do not suppress
+    try:
+        return any((m.get("status") or {}).get("value") == "loading"
+                   for m in json.loads(body).get("data", []))
+    except (json.JSONDecodeError, AttributeError):
+        return False
+
+
 def health_loop() -> None:
     """Memory pressure + systemd unit liveness -> Telegram, debounced.
 
@@ -1005,9 +1027,13 @@ def health_loop() -> None:
                 reasons.append(f"swap {m['swap_frac']*100:.0f}% full "
                                f"(> {SWAP_USED_MAX_FRAC*100:.0f}%)")
             if m["reclaim_ratio"] > RECLAIM_RATIO_MAX:
-                reasons.append(f"direct reclaim {m['reclaim_ratio']:.1f}x "
-                               f"(> {RECLAIM_RATIO_MAX}x) — scanning far more "
-                               f"than it can free")
+                if any_model_loading():
+                    log(f"HEALTH reclaim {m['reclaim_ratio']:.1f}x ignored — "
+                        f"a model is loading (expected, not a sick host)")
+                else:
+                    reasons.append(f"direct reclaim {m['reclaim_ratio']:.1f}x "
+                                   f"(> {RECLAIM_RATIO_MAX}x) — scanning far more "
+                                   f"than it can free")
             bad = bool(reasons)
 
             recovered = False

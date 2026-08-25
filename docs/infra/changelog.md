@@ -3438,3 +3438,182 @@ misleading if read directly.
 
 **End state.** the retired 35b model + gemma4-e4b resident; DS4 on-demand. Batch A and B
 both complete.
+
+---
+
+## 2026-08-25 23:4x — Hermes `timezone` pinned; reminder-outbox cleanup
+
+**Observed.** A `reminder-scheduler` cron failure in Telegram
+(`No module named workers.run_reminder_scheduler`) followed 2 min later by a
+healthy-looking reminder status report. Both traced to the same cause: the
+08-25 outbox rename (`39c81cd`) moved the module before its wrapper in
+`~/.hermes/scripts/`, and the `*/15` job fired inside that window. **One failed
+cycle at 23:00:15, self-recovered at 23:15:15** — the status report was a
+manual smoke test, not a recovery notice. A rename invalidates CALLERS, and
+here the caller lives outside the repo.
+
+Digging into the queue surfaced two unrelated problems:
+
+1. **A `failed` outbox row is retried by nothing.** `retry_count` stops at 1 and
+   the row sits there inflating the `Failed:` count forever. A real 2026-10-25
+   reminder had been dead since 08-20 — killed by a Google Tasks 400 that
+   `79f47a2` fixed **2.5 h later**. The nightly report *did* show `Failed: 1`,
+   but prints a bare count with no title or error, so it read as noise.
+2. **`outbox-status` (`1c12b0d6bd66`) had been paused since 2026-08-17** — 2 runs
+   ever. It is the only positive heartbeat over the outbox: the dispatcher is
+   `--no-agent` and silent on success, so it cannot report that it stopped.
+
+**Changed.**
+- `~/.hermes/config.yaml`: `timezone: ''` → `'Europe/Dublin'`
+  (backup `config.yaml.bak-20260825-pre-timezone`); `hermes-gateway.service`
+  restarted.
+- `hermes cron resume 1c12b0d6bd66`.
+- Deleted 3 dead outbox rows (backup `reminders.db.bak-20260825-pre-outbox-cleanup`).
+  The 2026-10-25 reminder was **deleted as WRONG, not re-filed** — see below.
+
+**Expected.** No duplicate morning brief on 25 Oct 2026 (one fire at 08:00
+instead of 06:00 + 07:00). Nightly outbox status resumes at 22:00. Outbox reads
+0 non-delivered.
+
+🔴 **The DST reminder was bad advice and was retracted.** It prescribed changing
+morning-brief from `0 7 * * *` to `0 6 * * *` "so it still fires at 06:00 UTC".
+Hermes cron schedules in **local wall-clock**, so `0 7` already means 07:00
+Dublin year-round; that edit would have moved the brief an hour earlier every
+winter and required a manual revert in March. The genuine defect was the empty
+`timezone` (fixed-offset fallback → croniter double-fire), fixed above.
+
+**Refs.** `39c81cd`, `79f47a2`; `cron/jobs.py`, `hermes_time.py`;
+memories `hermes-cron-timezone-dst`, `reminder-outbox-and-hermes-cron`,
+`apple-reminders-osascript-gotchas`.
+
+**Smoke-test.** Probe job `0 7 25 10 *` created on the **restarted** gateway
+returned `next run 2026-10-25T08:00:00+00:00` — the ZoneInfo answer
+(fixed-offset would give `07:00+01:00`); probe removed. Gateway started
+23:42:07 vs config mtime 23:42:02, ticker logged success at 23:42:20, so the
+running process holds the new value. `run_outbox_dispatcher.sh` exits 0 silently;
+`run_outbox_status.sh --no-send` renders with `Failed: 0` / `Pending: 0` on both
+tiers. Outbox: 16 delivered, **0 non-delivered**.
+
+⚠️ **Correction to a standing memory:** Apple Reminders mutation is NOT
+"create-only". `complete_item`/`delete_item` were smoke-tested end-to-end
+earlier on 2026-08-25, and `delete_item` was used in production here to retract
+the mis-filed reminder. The old claim inferred brokenness from *no callers
+outside tests*, which is not evidence. `reschedule_item` remains unexercised.
+
+---
+
+## 2026-08-26 00:0x — Outbox retry policy + honest status reporting
+
+**Observed.** Follow-up to the entry above, fixing the two defects it surfaced.
+
+1. **`failed` was terminal.** `mark_retry()` (which resets a row to `pending`)
+   had **zero production callers** — dead code — and `dequeue` selects only
+   `status='pending'`, so any transient error killed an item permanently.
+2. **`retry_count` was inert.** Its one read in `outbox_dispatcher.py` was
+   `if google_fallback_enabled and item.retry_count >= apple_max_retries:
+   return self._fallback_deliver(...)` — but the very next statement calls
+   `_fallback_deliver` unconditionally, and `retry_count` is 0 on every real
+   attempt (a failure never returns to `pending`), so **both arms did the same
+   thing and the gate never fired.** `APPLE_MAX_RETRIES=3` was configured,
+   plumbed and meaningless.
+3. **The nightly report contradicted itself.** `get_delivery_stats()` is
+   `GROUP BY tier, status` with **no date filter**, but `format_report`
+   labelled it `Delivered today`. The 08-25 report read Apple 11 + Google 5
+   = 16 all-time under a `Today's Summary — Delivered: 2`. The `Failed: 1`
+   beside it was likewise all-time, which is exactly how a 5-day-dead item
+   read as fresh news and got ignored nightly.
+4. **`failed_today` keyed on `created_at`**, not failure time — an item
+   enqueued Monday that dies Friday counted toward neither day.
+
+**Changed.** `workers/task_outbox.py`, `outbox_dispatcher.py`,
+`outbox_status.py`, `reminder_config.py`; new `tests/test_outbox_retry_policy.py`.
+
+- Additive migration adds **`failed_at`** and **`next_attempt_at`** (guarded by
+  `_column_exists`, same pattern as `remote_id`).
+- New **`record_failure()`**: under the cap → `status='retry'` with exponential
+  backoff (`3600 * 2**(n-1)` → +1 h, +2 h); at the cap → terminal `'failed'`.
+  `mark_failed` is untouched as the unconditional primitive.
+- `dequeue` now also returns `retry` rows whose `next_attempt_at` has passed.
+- Dead `retry_count >= apple_max_retries` branch deleted.
+- New config `OUTBOX_MAX_ATTEMPTS` (3) / `OUTBOX_RETRY_BACKOFF_SECONDS` (3600).
+- Report: tier lines relabelled **"(all time)"**; `failed_today` keyed on
+  `failed_at`; new **"⚠️ Needs attention"** section printing title, `FAILED` vs
+  `RETRY n/N`, age, next attempt, and the trimmed error — HTML-escaped, because
+  raw `<HttpError …>` breaks Telegram's HTML parse mode.
+
+**Expected.** A transient upstream fault now gets 3 attempts over ~3 h instead
+of dying on the first. The DST reminder lost on 08-20 (Tasks 400, fixed
+upstream 2.5 h later) would have been delivered. `Failed:` counts are now
+self-describing.
+
+✅ **Pre-existing `enqueue()` id bug — FIXED in the same session** (see the
+follow-up entry below).
+
+**Refs.** `workers/task_outbox.py` (`record_failure`, `_migrate_retry_columns`,
+`get_open_failures`), memory `reminder-outbox-and-hermes-cron`.
+
+**Smoke-test.** **953 tests pass** (944 existing + 9 new). One genuine bug was
+caught mid-change by the existing suite: the new `idx_outbox_next_attempt`
+index was initially in `_SCHEMA`, which `executescript` runs **before** the
+column migration — on any pre-existing table (production included) that aborts
+the whole DB open with `no such column: next_attempt_at`. Index moved into
+`_migrate_retry_columns`, after the `ALTER TABLE`.
+Migration verified on live `reminders.db`: 17 columns, **16 rows intact**,
+index present (backup `reminders.db.bak-20260825-pre-retry-migration`).
+Report rendering verified against seeded failures (terminal + retrying, with
+escaping). End-to-end production dispatch: enqueued id 26 → delivered via Apple
+with `remote_id`, `retry_count=0`, retry fields NULL → reminder deleted from
+Reminders.app and row removed. Outbox back to 16 delivered / 0 open.
+
+---
+
+## 2026-08-26 00:0x — `enqueue()` returned batch ids backwards
+
+**Observed.** Surfaced by a new test in the entry above. `TaskOutbox.enqueue()`
+used `executemany()` — which cannot report per-row ids — and then recovered
+them with:
+
+```sql
+SELECT id FROM reminder_outbox
+ WHERE title IN (...) AND status = 'pending'
+ ORDER BY created_at DESC
+```
+
+Two independent defects in one query:
+
+- **`ORDER BY created_at DESC` reverses the batch.** Demonstrated on a 4-item
+  batch: `['First','Second','Third','Fourth']` returned ids `[4,3,2,1]`, so the
+  caller's `ids[0]` ("First") actually pointed at **"Fourth"**.
+- **Rows are matched by `title`,** so duplicate titles within a batch were
+  ambiguous, and a title colliding with an existing `pending` row could hand
+  back **an unrelated older row's id** — a silent cross-item write.
+
+A `_fallback_get_ids()` path existed for when the count did not match; it had
+the same title-matching flaw, plus `LIMIT 1`.
+
+**Impact was latent, not active.** Every production caller
+(`workers/enqueue_reminder.py`, `enqueue_single`) enqueues **one** item, where
+order is trivially correct. Nothing in the tree indexed past `ids[0]`.
+
+**Changed.** `workers/task_outbox.py` — insert row-by-row inside the *same*
+`BEGIN IMMEDIATE` transaction (still atomic) and read each id from
+`cursor.lastrowid`. Title-based recovery and `_fallback_get_ids()` both deleted.
+The docstring now states the positional-alignment contract and what it used to
+do instead. 6 new tests in `tests/test_outbox_retry_policy.py`
+(`TestEnqueueIdContract`): positional alignment, duplicate titles, collision
+with an existing pending row, single-item + `enqueue_single`, empty batch, and
+mid-batch atomicity.
+
+**Expected.** `enqueue()` ids align positionally with the input. No behaviour
+change for the single-item callers that exist today; multi-item batches become
+usable.
+
+**Refs.** `workers/task_outbox.py::enqueue`; follows the retry-policy entry above.
+
+**Smoke-test.** **959 tests pass.** Regression cover proven genuine by running
+the OLD query against the NEW data: `lastrowid` → `[1,2,3,4]`
+(First…Fourth); old title+DESC → `[4,3,2,1]` (Fourth…First). Live
+`reminders.db` batch enqueue returned `[27, 28]` mapping correctly to items A
+and B — **POSITIONAL ALIGNMENT: PASS** — then both rows were deleted before the
+`*/15` dispatcher could fire (checked the clock first: 00:02, next tick 00:15).
+Outbox back to **16 delivered / 0 open**.

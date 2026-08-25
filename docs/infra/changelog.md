@@ -22,6 +22,75 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-25 (later 9) — REVERTED (later 8): DS4 back to 262144. 128k does not fit this workload.
+
+**Observed:** After lowering DS4 to 131072 I checked whether Hermes' compaction point
+moving to 64,000 actually mattered, and measured the real prompt-size distribution —
+which I should have done BEFORE the change, not after. Over 38 Telegram sessions in
+7 days (`session_model_usage`: `(input_tokens + cache_read_tokens) / api_call_count`):
+
+| mean prompt per call | value |
+|---|---|
+| median | **65,835** |
+| p90 | **119,394** |
+| max | **129,403** |
+
+At ctx 131072 the **input** budget is `131072 - 32768 (max_tokens) = 98,304`. So p90
+traffic **does not fit at all**, and the median already sat above the 64,000
+compaction threshold — meaning compaction on nearly every turn, not the "~2x as
+often" I had estimated. Session lifespan barely moves this: sub-2h sessions already
+median 60,614 / max 127,299, so the `session_reset` fix (later 7) does NOT rescue a
+smaller window. The size comes from tool-heavy agentic turns inside ONE session, not
+from accumulated days.
+
+🔴 **The compaction threshold is NOT `0.5 x ctx`** — the formula
+(`agent/context_compressor.py:_compute_threshold_tokens`) is
+`max((context_length - max_tokens) * compression.threshold, MINIMUM_CONTEXT_LENGTH)`
+with `MINIMUM_CONTEXT_LENGTH = 64_000` (`agent/model_metadata.py:413`):
+- ctx 262144 → `229,376 * 0.5 = 114,688` — the percentage governs, knob is LIVE.
+- ctx 131072 → `98,304 * 0.5 = 49,152` → floored up to **64,000** — the floor binds and
+  **`compression.threshold` is INERT** (any value ≤ 0.65 gives 64,000).
+⚠️ My earlier advice "set `compression.threshold: 1.0` to restore the old compaction
+point" was WRONG at ctx 131072: it yields 98,304 input + 32,768 output = exactly the
+window, zero margin. Do not use it.
+
+**Changed:** reverted all three legs to `262144` — `models.ini` (both copies,
+inode-preserving, inodes 12714493 / 9046916 unchanged), `~/.hermes/config.yaml:4`
+`model.context_length`, `~/.pi/agent/models.json:20` DS4 `contextWindow`. gemma4-e4b
+stays 131072 in all three places. Restarted `llama-router` then `hermes-gateway`.
+
+**Expected:** input budget back to 229,376 — 1.8x the measured max prompt — and the
+compaction threshold back to 114,688 where `compression.threshold` is a live knob
+again. Gives back the 2.58 GiB of GTT.
+
+**Refs:** `agent/context_compressor.py:3061` `_compute_threshold_tokens`;
+`agent/model_metadata.py:413` `MINIMUM_CONTEXT_LENGTH = 64_000`.
+
+**Smoke test:** PASSED, on the running process.
+1. Child argv: DS4 `--ctx-size 262144 --parallel 3`; gemma4 `--ctx-size 131072
+   --parallel 4` (correctly untouched).
+2. `[43397] load_model: initializing, n_slots = 3, n_ctx_slot = 262144, kv_unified = 'true'`;
+   ready payload `"n_ctx":262144`.
+3. Real completion: "17 + 25" → `42`, `finish_reason: stop`. gemma4 → `ok`.
+4. Watchdog real `probe_latency_seconds` for both (DS4 0.0730 s, gemma4 0.0282 s),
+   `probe_failures_total 0`.
+5. Gateway back up, telegram + whatsapp connected. DS4 cold load 3 min 5 s.
+6. Memory back to GTT 108.31 GiB / MemAvailable 11.31 GiB (was 106.07 / 13.33 at 128k).
+
+⚠️ **Near-miss worth keeping:** the revert script asserted
+`config.yaml.count('  context_length: 131072') == 1` and FAILED — because once
+`model.context_length` was 131072 it became textually IDENTICAL to
+`auxiliary.compression.context_length` (gemma4's, line 152). A naive string replace
+would have silently retargeted gemma4's compression window. Same class of trap as
+`[qwen3.8-27b-q4]` also carrying `ctx-size = 262144` in models.ini. **Line-target
+these edits, never string-replace a bare number that appears in more than one role.**
+
+**Lesson:** measure the workload's actual prompt-size distribution BEFORE changing a
+context window, not after. The fit question ("does p90 traffic still fit in the input
+budget?") is a correctness question and dominates the memory question.
+
+---
+
 ## 2026-08-25 (later 8) — DS4 ctx 262144 → 131072 (user request). Returned 2.58 GiB of GTT; `ctx` IS a memory lever after all.
 
 **Observed:** User asked to take DS4 down to 128k. Context on this box had been

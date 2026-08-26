@@ -115,8 +115,9 @@ Other listeners: SearXNG **:8888** (search). WhatsApp bridge **:3000** (Hermes, 
 
 🔴 **VictoriaMetrics + node-exporter + amdgpu-exporter RETIRED 2026-08-26** — the
 `mem-sampler` tracker closed the last blocker (the restart-bleed investigation).
-`docker compose down` in `~/observability/stack/` (vm-data volume kept, not
-deleted); `amdgpu-exporter.service` stopped + disabled. There is now **no
+`docker compose down` in `~/observability/stack/`; `amdgpu-exporter.service`
+stopped + disabled; the `stack_vm-data` volume (VM's TSDB) was reclaimed the
+same day via `docker volume rm`. There is now **no
 Prometheus-style metrics stack at all** — all alerting runs on
 `llama-watchdog` (`:9611`, reads `/proc`/`rocm-smi` directly) and the
 `mem-sampler` tracker (`~/observability/stack/mem-sampler/`, 5-min JSONL,

@@ -40,12 +40,16 @@ post-restart dip plateaued flat for 7+ h rather than continuing to fall — i.e.
 bounded, mostly-explained pattern, not the open leak. That closed the hold.
 
 **Changed:** `docker compose down` in `~/observability/stack/` (removed
-`victoriametrics` + `node-exporter` containers; `vm-data` volume left in place,
-not deleted). `systemctl --user stop && disable amdgpu-exporter`. Confirmed no
-other consumer references ports 8428/9100/9610 (grepped Hermes config, systemd
-units, llama-stack env — none found; VM's own `scrape.yml` was the only thing
-scraping node-exporter/amdgpu-exporter, and Grafana, VM's only reader, was
-already gone).
+`victoriametrics` + `node-exporter` containers). `systemctl --user stop &&
+disable amdgpu-exporter`. Confirmed no other consumer references ports
+8428/9100/9610 (grepped Hermes config, systemd units, llama-stack env — none
+found; VM's own `scrape.yml` was the only thing scraping node-exporter/
+amdgpu-exporter, and Grafana, VM's only reader, was already gone). The
+`stack_vm-data` docker volume (VM's 30 d TSDB, created 2026-05-10) was kept
+initially in case the retirement needed rolling back, then removed the same
+day via `docker volume rm stack_vm-data` once the retirement was confirmed
+stable and its history had no further use — the `mem-sampler` JSONL tracker
+now covers this class of forensics going forward.
 
 **Expected:** reclaim ~269 MiB RAM + free 3 loopback/host ports. No functional
 loss — llama-watchdog does not depend on any of these three for alerting.

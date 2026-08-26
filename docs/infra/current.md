@@ -1,6 +1,7 @@
 # AI Infra — Current State
 
-> **Last verified:** 2026-08-25 — host RAM pressure work (Firecrawl socket-activated, sysctl tuned; see changelog).
+> **Last verified:** 2026-08-26 — VictoriaMetrics + node-exporter + amdgpu-exporter retired (see changelog).
+> Prior: 2026-08-25 — host RAM pressure work (Firecrawl socket-activated, sysctl tuned; see changelog).
 > Model/router state is UNCHANGED by that work and was last verified 2026-08-20 (from live system — router `:9292` after a clean
 > restart, `docker inspect` mounts, child argv, cron pins, and the running
 > watchdog process. **qwen3.8-27b evaluation CLOSED: DS4 is the daily driver
@@ -112,6 +113,16 @@
 
 Other listeners: SearXNG **:8888** (search). WhatsApp bridge **:3000** (Hermes, self-chat mode). Grafana retired 2026-08-13.
 
+🔴 **VictoriaMetrics + node-exporter + amdgpu-exporter RETIRED 2026-08-26** — the
+`mem-sampler` tracker closed the last blocker (the restart-bleed investigation).
+`docker compose down` in `~/observability/stack/` (vm-data volume kept, not
+deleted); `amdgpu-exporter.service` stopped + disabled. There is now **no
+Prometheus-style metrics stack at all** — all alerting runs on
+`llama-watchdog` (`:9611`, reads `/proc`/`rocm-smi` directly) and the
+`mem-sampler` tracker (`~/observability/stack/mem-sampler/`, 5-min JSONL,
+its own systemd timer, unaffected by this retirement). Full detail + smoke
+test in `changelog.md`.
+
 ## Alerting (2026-08-25 — replaces Grafana rules)
 
 🔴 **Alerting had been 100% BROKEN and silent.** Enabling forum topics upgraded
@@ -145,8 +156,10 @@ forever and never recover.
 |---|---|---|---|
 | 9292 | llama-router (`--network host`, `--host 127.0.0.1`) | `127.0.0.1` ✅ | none needed — **loopback only since 2026-08-25** (was `0.0.0.0` no-auth). ⚠️ Still IPv4-only; `localhost` consumers reach it by falling back from `::1`, exactly as before |
 | 3002 | Firecrawl (systemd socket → `127.0.0.1:3012`) | `127.0.0.1` + `[::1]` ✅ | none (loopback only) — **fixed 2026-08-25**, was `0.0.0.0` no-auth |
-| 9611 / 9610 / 9100 | watchdog / amdgpu exporter / node-exporter | **`0.0.0.0`** | none |
-| 3000 / 8428 | WhatsApp bridge / VictoriaMetrics | `127.0.0.1` ✅ | — |
+| 9611 | llama-watchdog | **`0.0.0.0`** | none |
+| 3000 | WhatsApp bridge | `127.0.0.1` ✅ | — |
+
+~~9610 / 9100 amdgpu-exporter / node-exporter~~ and ~~8428 VictoriaMetrics~~ — retired 2026-08-26, ports no longer bound.
 
 > **2026-08-13: Grafana retired.** The `grafana` service was removed from `~/observability/stack/docker-compose.yml` and its container deleted; **:3000 is now owned by the Hermes WhatsApp bridge** (`whatsapp.extra.bridge_port: 3000`). VictoriaMetrics (:8428) and node-exporter (:9100) remain. Grafana-provisioned Telegram alert rules are gone; the llama-watchdog's own Telegram alerts remain.
 

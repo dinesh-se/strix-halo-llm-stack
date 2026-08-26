@@ -22,6 +22,47 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-26 — VictoriaMetrics + node-exporter + amdgpu-exporter retired
+
+**Observed:** Grafana went 2026-08-13; alerting has run entirely on llama-watchdog
+(`:9611`, reads `/proc` directly) since. VM served 0 queries in 7 days. Retirement
+was deliberately held back until the still-open "~3.2 GiB / 10 h restart-bleed"
+(see `host_ram_pressure_gtt_invisible` memory) was closed, since VM's history was
+the only instrument for it. A `mem-sampler` tracker (`~/observability/stack/mem-sampler/`,
+5-min samples) was stood up 2026-08-25 specifically to close that question.
+By 2026-08-26 it had a full 22 h cycle (a router restart, both 21:35/23:00 crons,
+and a 7 h overnight stretch): net MemAvailable change over 22 h was only −0.87 GiB
+with just **−0.09 GiB unexplained residual** (growth fully attributed to chrome,
+one python process, and normal kernel slab — not a host-side leak); GTT stayed
+flat (110.29 → 110.41 GiB) across both crons; the overnight window showed a
+healthy 1.0× direct-reclaim ratio (vs. the earlier alarming 6.0×/22.7×) and the
+post-restart dip plateaued flat for 7+ h rather than continuing to fall — i.e. a
+bounded, mostly-explained pattern, not the open leak. That closed the hold.
+
+**Changed:** `docker compose down` in `~/observability/stack/` (removed
+`victoriametrics` + `node-exporter` containers; `vm-data` volume left in place,
+not deleted). `systemctl --user stop && disable amdgpu-exporter`. Confirmed no
+other consumer references ports 8428/9100/9610 (grepped Hermes config, systemd
+units, llama-stack env — none found; VM's own `scrape.yml` was the only thing
+scraping node-exporter/amdgpu-exporter, and Grafana, VM's only reader, was
+already gone).
+
+**Expected:** reclaim ~269 MiB RAM + free 3 loopback/host ports. No functional
+loss — llama-watchdog does not depend on any of these three for alerting.
+
+**Refs:** `~/observability/stack/mem-sampler/samples.jsonl` (the closing dataset),
+`host_ram_pressure_gtt_invisible` + `observability_stack_deployed` memories.
+
+**Smoke test:** `docker ps` confirms both containers gone; `ss -tlnp` confirms
+nothing listening on 8428/9100/9610; `llama-watchdog` still `active`, `/metrics`
+shows `probe_success{model=...}=1` with real non-zero `probe_latency_seconds`
+for both resident models (not a `PROBE_GRACE_SECONDS` false-pass); `llama-router`
+`/health` still `{"status":"ok"}`; `mem-sampler.timer` still enabled and its
+latest sample still carries `gtt_used` (it reads sysfs/rocm-smi directly, not
+amdgpu-exporter, so retirement doesn't touch it).
+
+---
+
 ## 2026-08-25 (later 10) — DS4 `parallel` 3 → 4: the watchdog stops eating a conversation slot
 
 **Observed:** llama-watchdog pins its 60 s probe to `max(slot_id)`, so one slot is

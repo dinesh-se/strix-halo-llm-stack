@@ -3617,3 +3617,129 @@ the OLD query against the NEW data: `lastrowid` → `[1,2,3,4]`
 and B — **POSITIONAL ALIGNMENT: PASS** — then both rows were deleted before the
 `*/15` dispatcher could fire (checked the clock first: 00:02, next tick 00:15).
 Outbox back to **16 delivered / 0 open**.
+
+## 2026-08-26 09:1x — Hindsight 0.8.4 → 0.9.2 upgrade
+
+**Observed.** Hindsight install was behind and internally skewed:
+`hindsight-api-slim`/`hindsight-all` 0.8.4, `hindsight-embed` 0.8.6,
+`hindsight-client` 0.6.1 — PyPI had 0.9.2 for all four. Measured consolidation
+backlog: **3,644 of 8,965 memory units pending (40.6%)**, 4 permanently failed.
+0.9.1/0.9.2 release notes claim fixes targeting exactly this shape: partial
+batch-failure retry ("Consolidation now avoids retrying an entire batch when
+only some LLM calls fail"), per-bank claim serialization, and a pending-stats
+fix that excludes permanently-failed rows. `hermes update` also re-installs the
+active provider's deps with `force=True` against an open `>=0.6.1` floor, so a
+future update could pull 0.9.2 unannounced.
+
+**Pre-flight verification (before touching anything).** DB schema head was
+`b57a7c9e0d13` — exactly 0.8.4's head, no drift. 0.9.2's migration chain from
+there is linear, 17 steps, no branches/merges, ending at `d1e2f3a4b5c6`. All 5
+destructive migrations (column/index drops) implement `downgrade()`; on
+PostgreSQL `DROP COLUMN` is metadata-only, no table rewrite. `pip --dry-run`
+showed the entire ML stack (`torch`, `transformers`, `sentence-transformers`,
+`huggingface-hub`, `tokenizers`, `onnxruntime`, `numpy`, `sqlalchemy`,
+`pg0-embedded`, `litellm`) already satisfied — untouched by the upgrade. This
+matters directly: the 2026-07-13 outage was `huggingface-hub`/`transformers`
+skew and the 2026-08-01 outage was a venv rebuild stripping `hindsight-all`;
+neither recurs here. Client API 0.6.1→0.9.2 is purely additive (16 methods
+added, 0 removed); the 5 methods Hermes calls (`arecall`, `areflect`,
+`aretain_batch`, `close`, `aclose`) have byte-identical signatures. Deprecated
+standalone `hindsight-hermes` plugin confirmed NOT installed. Mode confirmed
+`local_external`, so the embedded daemon-spawn path (`_ensure_started`) does
+not apply.
+
+**Two landmines identified and handled.**
+1. `HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP` is unset → defaults to `true`.
+   With `Restart=always`/`RestartSec=10`, a migration failure at daemon start
+   becomes a restart loop with the real error scrolling past — the 07-31
+   shape. Avoided by running migrations explicitly, gated, before ever
+   starting the upgraded daemon.
+2. `postgres` (embedded, pg0) shares `hindsight-daemon.service`'s cgroup under
+   `KillMode=control-group` — stopping the daemon also stops the database.
+   The gated migration therefore had to bring Postgres up **standalone** via
+   the pg0 API, not rely on the daemon.
+
+🔴 **The pg0 API surface changed in 0.9.2, discovered only by running it.**
+0.8.4's `hindsight_api.pg0.start_embedded_postgres()` /
+`stop_embedded_postgres()` / `get_embedded_postgres()` module functions are
+**gone**. 0.9.2 exposes an `EmbeddedPostgres` class instead
+(`ensure_running()` / `stop()` / `is_running()` / `get_uri()`, all async) plus
+`parse_pg0_url()` → `Pg0Url(instance_name, port, ...)`. `resolve_database_url()`
+wraps the same pattern. Anyone scripting against pg0 directly must re-check
+this surface per version — it is not covered by the client/server API
+stability the rest of this entry relies on.
+
+**Changed.**
+1. Baseline recorded (matched the pre-flight measurement exactly: 8965 /
+   3644 / 4).
+2. `pg_dump -Fc` → `~/hindsight-pre-0.9.2-20260826.dump` (28.2 MiB, 170 TOC
+   entries, verified with `pg_restore --list`) — the only rollback path,
+   since a package downgrade alone does not revert the schema.
+3. `systemctl --user stop hindsight-daemon.service` — confirmed both the
+   daemon and Postgres gone (ports 9177 and 5432 both free), matching the
+   cgroup-kill prediction.
+4. `pip install --upgrade hindsight-all==0.9.2 hindsight-api-slim==0.9.2
+   hindsight-client==0.9.2 hindsight-embed==0.9.2` in `~/hermes-agent/.venv`
+   — matched the dry-run exactly: only the 4 Hindsight packages plus 10 small
+   pure-Python deps (opentelemetry, dateparser, json-repair,
+   github-copilot-sdk); zero ML-stack packages touched.
+5. Migrations run explicitly via the new `EmbeddedPostgres` class against
+   `pg0://hindsight-embed-hermes`, with output visible in the terminal —
+   completed cleanly, no errors.
+6. Schema head verified as `d1e2f3a4b5c6` (exact match) and row counts
+   unchanged (8965/3644/4) before starting anything else — the hard gate from
+   the plan.
+7. `systemctl --user start hindsight-daemon.service` — daemon logged one
+   **deprecation warning**, not an error:
+   `HINDSIGHT_API_WORKER_CONSOLIDATION_MAX_SLOTS is deprecated ... it reserves
+   a *minimum* (floor), not a maximum. Rename to
+   HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS.` Not renamed yet
+   (currently `1`) — flagged in the services table, deferred to a deliberate
+   follow-up rather than bundled into this change.
+8. `systemctl --user restart hermes-gateway.service` — picks up the new
+   `hindsight_client` in the long-lived process; also restarts the cron
+   ticker (lives inside this unit), done away from any cron boundary.
+
+**Expected.** All four packages at 0.9.2. Schema at head `d1e2f3a4b5c6`.
+Consolidation backlog (3,644 pending as of this change) should start falling
+over the next 1–2 days if the 0.9.1/0.9.2 fixes work as documented; flat means
+the bottleneck is concurrency/LLM throughput, not the batch-retry bug, and
+`WORKER_CONSOLIDATION_MAX_SLOTS`/`CONSOLIDATION_LLM_PARALLELISM` become a
+separate, attributable follow-up.
+
+**Refs.** `~/hindsight-pre-0.9.2-20260826.dump` (rollback). Release notes:
+https://hindsight.vectorize.io/changelog (0.9.0/0.9.1/0.9.2 entries pulled and
+quoted during pre-flight). Plan: `flickering-spinning-willow.md`.
+
+**Smoke-test.** Verified the running process, not just the file, per standing
+rule:
+- `curl :9177/health` → `{"status":"healthy","database":"connected",...}`
+  (exactly what `llama-watchdog.hindsight_healthy()` checks).
+- `curl :9177/version` → `api_version: "0.9.2"`; `/openapi.json` →
+  `title: "Hindsight HTTP API", version: "0.9.2"`.
+- **Real recall** against bank `hermes`
+  (`POST /v1/default/banks/hermes/memories/recall`) — returned correct,
+  relevant memories (Hosur rental / passive-income facts) with proper
+  reranker/semantic/keyword scores. This is the check that actually matters;
+  a wedged server still answers `/health`.
+- **Real retain** (`POST /v1/default/banks/hermes/memories`) — a smoke-test
+  observation was extracted and written (233 output tokens, real LLM call);
+  `total_memory_units` moved 8965→8966, `pending_consolidation` 3644→3645
+  (the new unconsolidated write) — confirms the migrations only touched
+  columns/indexes, never rows.
+- `NRestarts=0` on both `hindsight-daemon.service` and
+  `hermes-gateway.service`; journals clean, no migration or startup errors.
+- `hermes memory status` (CLI) → provider `hindsight`, plugin installed ✓,
+  status available ✓.
+- `hermes cron list` → valid future `Next run` timestamps, confirming the
+  ticker survived the gateway restart.
+- One unrelated, pre-existing item noted and not chased: gateway log shows
+  `[Whatsapp] Poll error: Cannot connect to host 127.0.0.1:3000` — the
+  WhatsApp bridge, unrelated to Hindsight.
+
+**Follow-up (deliberately deferred, not done in this change).** Re-check
+`pending_consolidation` against the 3,644/8,965 baseline in 1–2 days.
+Rename `HINDSIGHT_API_WORKER_CONSOLIDATION_MAX_SLOTS` →
+`HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS` in
+`hindsight-daemon.service` on the next infra touch (cosmetic only — same
+value, same behavior, just silences the warning).

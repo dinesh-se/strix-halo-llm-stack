@@ -3743,3 +3743,23 @@ Rename `HINDSIGHT_API_WORKER_CONSOLIDATION_MAX_SLOTS` →
 `HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS` in
 `hindsight-daemon.service` on the next infra touch (cosmetic only — same
 value, same behavior, just silences the warning).
+
+## 2026-08-26 09:3x — Closed the deferred consolidation-slots rename
+
+**Observed.** The prior 0.9.2 upgrade entry deferred renaming
+`HINDSIGHT_API_WORKER_CONSOLIDATION_MAX_SLOTS` → `_RESERVED_SLOTS` (0.9.2
+deprecated the old name — cosmetic only, it was always a *minimum* floor
+despite the "MAX" in the name).
+
+**Changed.** `~/.config/systemd/user/hindsight-daemon.service` — renamed the
+`Environment=` key, value unchanged (`1`). Backup:
+`hindsight-daemon.service.bak-20260826-pre-consolidation-slots-rename`.
+`daemon-reload && restart`.
+
+**Expected.** Same reservation behavior, deprecation warning silenced.
+
+**Smoke-test.** Verified the running process: startup log has no deprecation
+warning (present on the 0.9.2 upgrade's first start, absent here); poller log
+confirms `reservations=[consolidation=1]` — identical to before the rename;
+`/proc/<MainPID>/environ` shows `HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS=1`;
+`/health` green; `NRestarts=0`.

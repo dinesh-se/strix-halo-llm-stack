@@ -1,6 +1,13 @@
 # AI Infra — Current State
 
-> **Last verified:** 2026-08-26 21:35 — Qwen3.8-Flash-Next evaluated (standalone :10098 eval
+> **Last verified:** 2026-08-27 (later) — **Epa Q** (proactive task queue in
+> `~/Dev/automated-workflows`) went live: a new DS4 consumer (the *executor*), an
+> advisory `ds4_lease` for turn-taking on the single resident model, and a *supervisor*
+> that pauses the executor on `/health` failure or critical host-RAM. The `overnight-tasks`
+> 23:00 cron and `gpu-price-watch` folded into it; both old crons paused. **Serving layer
+> UNCHANGED** — no `models.ini` / `np` / router change (DS4 stays `parallel = 4`). See the
+> `### Epa Q` subsection under Hermes, and the changelog.
+> Prior: 2026-08-26 21:35 — Qwen3.8-Flash-Next evaluated (standalone :10098 eval
 > container, never touched `models.ini`) and REJECTED as a DS4 replacement — decode at real
 > workload depth is WORSE than DS4, not just blocked by upstream issues (see changelog + the
 > Qwen3.8-Flash-Next section below). Hindsight per-op LLM routing regressed to a cloud
@@ -18,7 +25,7 @@
 ## Host
 
 - **Machine:** Beelink GTR9 Pro — AMD Ryzen AI MAX+ 395 (Strix Halo), Radeon 8060S (gfx1151, RDNA 3.5), 128 GB unified memory, Ubuntu (kernel 7.0.0-29).
-- **Host RAM pressure (2026-08-25):** GTT holds **109.11 GiB of 122.7 GiB**, leaving only **13.59 GiB** for the entire OS and every service. Process RSS totals just 7.1 GiB — **the memory is in GTT and does NOT show in `ps`**, so "nothing is using it" is a misread. 🔴 **The 103.3 GiB figure below (98.4 DS4 + 4.9 gemma) is STALE by +5.81 GiB** — it was measured at `ctx 131072` bare; DS4 runs `ctx 262144 parallel 3` and gemma `ubatch-size 2048 parallel 4`, and compute buffers scale with ubatch × slots. Partly decomposed 2026-08-25: **`ctx` IS a lever — 262144 -> 131072 returned 2.58 GiB** (measured), well above the ~0.6 GiB the 4.5 MiB/1k KV figure predicts, because compute buffers scale with ctx as well as with ubatch x slots. The earlier "`ctx` is NOT the lever" claim was wrong. ⚠️ **But that 2.58 GiB is NOT claimable** — 128k does not fit the workload (see the DS4 row) and the change was reverted the same day. Remainder still undecomposed — MEASURE, do not estimate.
+- **Host RAM pressure (2026-08-25):** GTT holds **109.11 GiB of 122.7 GiB**, leaving only **13.59 GiB** for the entire OS and every service. Process RSS totals just 7.1 GiB — **the memory is in GTT and does NOT show in `ps`**, so "nothing is using it" is a misread. 🔴 **The 103.3 GiB figure below (98.4 DS4 + 4.9 gemma) is STALE by +5.81 GiB** — it was measured at `ctx 131072` bare; DS4 runs `ctx 262144 parallel 3` (now `parallel 4` — see the Models table) and gemma `ubatch-size 2048 parallel 4`, and compute buffers scale with ubatch × slots. Partly decomposed 2026-08-25: **`ctx` IS a lever — 262144 -> 131072 returned 2.58 GiB** (measured), well above the ~0.6 GiB the 4.5 MiB/1k KV figure predicts, because compute buffers scale with ctx as well as with ubatch x slots. The earlier "`ctx` is NOT the lever" claim was wrong. ⚠️ **But that 2.58 GiB is NOT claimable** — 128k does not fit the workload (see the DS4 row) and the change was reverted the same day. Remainder still undecomposed — MEASURE, do not estimate.
 - **VM tuning:** `/etc/sysctl.d/99-llm-host-memory.conf` — `vm.swappiness=10`, `vm.vfs_cache_pressure=50` (2026-08-25). GTT is **unswappable**, so at the stock swappiness=60 the only reclaimable pages were the working sets of hermes / hindsight-daemon / llama-router — they were being paged out and had to fault back in before answering, which is what "Hermes is slow" actually was.
 - **VRAM model:** GTT memory model — BIOS UMA carveout at **512 MB minimum**, so the iGPU reaches ~124 GiB drawing from system RAM. 🔴 **SSoT drift fixed 2026-08-26 — this used to list only four of the SIX flags actually in `/etc/default/grub`.** All six, verbatim from `GRUB_CMDLINE_LINUX_DEFAULT`: `amd_iommu=off`, `amdgpu.dcdebugmask=0x12`, `ttm.pages_limit=32505856`, `ttm.page_pool_size=32505856`, `amdgpu.gttsize=126976`, `amdgpu.lockup_timeout=10000,60000,10000,10000`. **`amdgpu.gttsize=126976` is 124 GiB and is the actual source of the "~124 GiB usable" figure above** — it was previously undocumented here. `nogttspill` REMOVED (GTT is the memory model, not an overflow path). ⚠️ `/etc/default/grub` is a dpkg conffile owned by `grub2-common` — a package upgrade that offers "install the maintainer's version" will wipe all six; always keep the locally-modified version.
 
@@ -36,7 +43,7 @@
 | id | quant / size | residency | ctx | parallel | t/s (measured) | notes |
 |---|---|---|---|---|---|---|
 | `gemma4-e4b` | UD-Q4_K_XL + MTP, ~4.9 GiB | **resident** (load-on-startup) | 131072 | 4, kv-unified | ~114 | ALL aux work: Hermes compression/title-gen/curator/background_review, Hindsight retain+consolidation. sps 0.5, draft-mtp n=4, no-mmproj, reasoning-budget 8192 |
-| `deepseek-v4-flash` | UD-IQ3_XXS, ~98.4 GiB | **RESIDENT at boot** (2026-08-15) | **262144** | **4, kv-unified** (3 -> 4 on 2026-08-25) | **19.48 decode / 268.98 prefill @pp2053** (MEASURED live 2026-08-12) | primary resident heavy model: Hermes/pi default, all 5 pi-kalam roles, Hindsight reflect, email digest. sps 0.5, cache-reuse 256, no dspark sidecar (OOM-killed 2026-08-06). Cold load 3–11 min. Coexists only with gemma4-e4b (98.4+4.9 = 103.3 GiB < 120 GiB cap). `n_ctx_train` is **1048576** — we run 25% of it. 🔴 **Briefly lowered to 131072 on 2026-08-25 and REVERTED the same day — 128k does not fit this workload.** MEASURED over 38 Telegram sessions / 7 d: mean prompt/call **median 65,835, p90 119,394, max 129,403**. At ctx 131072 the INPUT budget is only 98,304 (window minus Hermes' `max_tokens` 32768 reservation), so **p90 traffic does not fit**, and the median already exceeded the 64,000 compaction threshold. Session lifespan barely moves this (sub-2h sessions already median 60,614), so `session_reset` does not rescue a smaller window — the size comes from tool-heavy agentic turns inside ONE session. The 131072 experiment did return **2.58 GiB of GTT** (108.65 -> 106.07), which is 4x the KV-only estimate — so **`ctx` IS a memory lever** — but that memory is not available at an acceptable fit. Under kv-unified `n_ctx_slot == ctx-size`, NOT split |
+| `deepseek-v4-flash` | UD-IQ3_XXS, ~98.4 GiB | **RESIDENT at boot** (2026-08-15) | **262144** | **4, kv-unified** (3 -> 4 on 2026-08-25) | **19.48 decode / 268.98 prefill @pp2053** (MEASURED live 2026-08-12) | primary resident heavy model: Hermes/pi default, all 5 pi-kalam roles, Hindsight reflect, email digest, **+ the Epa Q executor** (`~/Dev/automated-workflows`, per-task isolated `hermes chat` pinned via `LLM_BASE_URL`/`LLM_MODEL`, one task at a time — see `### Epa Q` under Hermes). sps 0.5, cache-reuse 256, no dspark sidecar (OOM-killed 2026-08-06). Cold load 3–11 min. Coexists only with gemma4-e4b (98.4+4.9 = 103.3 GiB < 120 GiB cap). `n_ctx_train` is **1048576** — we run 25% of it. 🔴 **Briefly lowered to 131072 on 2026-08-25 and REVERTED the same day — 128k does not fit this workload.** MEASURED over 38 Telegram sessions / 7 d: mean prompt/call **median 65,835, p90 119,394, max 129,403**. At ctx 131072 the INPUT budget is only 98,304 (window minus Hermes' `max_tokens` 32768 reservation), so **p90 traffic does not fit**, and the median already exceeded the 64,000 compaction threshold. Session lifespan barely moves this (sub-2h sessions already median 60,614), so `session_reset` does not rescue a smaller window — the size comes from tool-heavy agentic turns inside ONE session. The 131072 experiment did return **2.58 GiB of GTT** (108.65 -> 106.07), which is 4x the KV-only estimate — so **`ctx` IS a memory lever** — but that memory is not available at an acceptable fit. Under kv-unified `n_ctx_slot == ctx-size`, NOT split |
 | **`qwen3.8-27b-q4`** | **UD-Q4_K_XL, ~34.2 GiB resident** | **on-demand — the ONLY swap target** | 262144 | 1, kv-unified | **31.3 / 32.6 decode** (MEASURED in prod 2026-08-19); 12.4 spec-off | `spec-type = draft-mtp`, **`spec-draft-n-max = 5`**. sha256 `3f227079…bc8b01e`. **Evaluated 2026-08-19 and REJECTED as a daily driver** — faster per token than DS4 but `parallel = 1` with reasoning always on, so it loses on real multi-caller work. MTP embedded (`blk.64.nextn.*`), no sidecar. The Q8_0 twin was deleted 2026-08-20 (section + 29 GB GGUF) |
 
 ### Qwen3.8-Flash-Next (`qwen4exp`) — evaluated 2026-08-26, REJECTED as a DS4 replacement
@@ -89,7 +96,7 @@ re-test; the depth curve is the whole story here.
 
 > **Residency is a runtime state, not config.** The table above is the *steady state after a router restart* — DS4 + gemma; qwen3.8-27b-q4 is `load-on-startup = false` and never comes up on its own. **As of 2026-08-20 the live state matches it again.** A manual `swap-model.sh qwen` or any request naming the unloaded Q4 legitimately changes residency; the watchdog heavy-model mutex evicts as designed. **That is normal operation — do not "fix" it and do not log it as drift.** Check live state with `curl -s localhost:9292/models | python3 -c "import json,sys;[print(m['id'],m['status']['value']) for m in json.load(sys.stdin)['data']]"` before drawing conclusions from this table.
 >
-> 🔴 **But a hand-loaded Q4 is not free of consequences:** while it is resident, DS4 is not, and every unattended caller pinned to DS4 (both check-in crons, Hermes `model.default`, the overnight cycle) will trigger a router autoload that evicts it. If two callers want two different heavy models at once, the mutex cannot save you — it guards CO-RESIDENCY, not CONTENTION (2026-08-19 21:37 OOM). Load the Q4 when you are at the keyboard, and expect to lose it at 21:35 or 23:00.
+> 🔴 **But a hand-loaded Q4 is not free of consequences:** while it is resident, DS4 is not, and every unattended caller pinned to DS4 (both check-in crons, Hermes `model.default`, the Epa Q executor via `epaq-dispatch`) will trigger a router autoload that evicts it. If two callers want two different heavy models at once, the mutex cannot save you — it guards CO-RESIDENCY, not CONTENTION (2026-08-19 21:37 OOM). Load the Q4 when you are at the keyboard, and expect to lose it at 21:35 or whenever an Epa Q task runs (the 23:00 overnight-tasks run no longer exists).
 
 ## Role → model mapping (aliases GONE — consumers pin concrete ids)
 
@@ -149,6 +156,7 @@ re-test; the depth curve is the whole story here.
 - **custom_providers** `Local Models` → `http://127.0.0.1:9292/v1`, api_key `unused-llama-router-direct`, max_tokens 32768, provider-level `model: deepseek-v4-flash`, models = **[deepseek-v4-flash, gemma4-e4b, qwen3.8-27b-q4]** (the Q8_0 `qwen3.8-27b` was removed 2026-08-20 along with its GGUF); `model.context_length: 262144` (3-way sync with models.ini + pi contextWindow; briefly 131072 on 2026-08-25, reverted same day). 🔴 **This key also sets Hermes' compaction point, and the formula is NOT `0.5 x ctx`:** it is `max((context_length - max_tokens) x compression.threshold, MINIMUM_CONTEXT_LENGTH)` where `MINIMUM_CONTEXT_LENGTH = 64_000` (`agent/model_metadata.py:413`) and `max_tokens = 32768`. At 262144 -> **114,688** (the percentage governs, so `compression.threshold` is a live knob — `0.8` would give ~183k). At 131072 -> 49,152 floored up to **64,000**, where the floor binds and **`compression.threshold` becomes INERT** (any value <= 0.65 gives the same number). ⚠️ `compression.threshold: 1.0` at ctx 131072 yields 98,304 input + 32,768 output = exactly the window, zero margin — do not use it. Every compaction rewrites the prefix = unavoidable re-prefill of summary+tail (DS4 logs `cache_reuse is not supported by this context`); the system prompt and `protect_first_n` head stay cached.
 - ⚠️ **A running Hermes session keeps its pinned model in session state** — config changes do not move it retroactively. Start a new session (or switch in-session) to pick up a `model.default` change. This is what left the user on the slow Q8_0 on 08-19.
 - **Cron model pins (both on `deepseek-v4-flash` as of 2026-08-20):** `morning-check-in` `827131b2c8b5` (07:30), `night-check-in` `5d37a9e1e859` (21:35). Every other job runs `model: null` and therefore resolves to `model.default`. 🔴 **These pins are the load-bearing guard for gotcha #6** — an unattended job naming an unloaded ~98 GiB model is the OOM path. Re-check them after ANY model swap.
+- **Epa Q crons (2026-08-27):** `epaq-dispatch` `0fd2c2ecdaed` (*/15), `epaq-supervise` `b97ea1e859c6` (*/10). Both are `--no-agent --script` (`~/.hermes/scripts/run_epaq_{dispatch,supervise}.sh`), so **the cron tick itself makes no model call** — the DS4 consumer is the *executor* that `epaq-dispatch` spawns, and it is pinned to the RESIDENT DS4, so gotcha #6 stays closed. The `.sh` wrappers redirect to their own logs, so `hermes cron --no-agent` sees empty stdout and stays silent each tick.
 - Aux roles (compression, title_generation, curator, background_review, delegation) → **gemma4-e4b** at :9292
 - 🔴 **`auxiliary.vision` is the ONE aux role not on local hardware (2026-08-27):** `provider: opencode-zen`, `model: minimax-m3` — a **paid** OpenCode Zen model ($0.30 in / $1.20 out per M; a 350-token OCR call measured `"cost": "0.00014442"`). It exists because `deepseek-v4-flash` is text-only, so `decide_image_input_mode()` returns `"text"` and every image is routed to this aux client. 🔴 **OpenCode Zen serves different models on different API surfaces** and the transport is picked from `auxiliary.<task>.api_mode`: `gpt-*`/`grok-*` → `/v1/responses`, `claude-*`/`qwen*` → `/v1/messages` (base_url loses its `/v1`), everything else → `/v1/chat/completions` (`hermes_cli/models.py::opencode_model_api_mode`). 🔴 **The `hermes model` → "Configure auxiliary models…" picker never writes `api_mode`** — `hermes_cli/main.py::_save_aux_choice` writes exactly `provider`/`model`/`base_url`/`api_key` — so picking a `gpt-*`/`claude-*`/`qwen*` Zen model there yields a plain `OpenAI` client aimed at the WRONG endpoint, with no config error. **Therefore: only ever put a natively `chat_completions` Zen model in this slot.** ⚠️ `gemini-3.5-flash-lite` was the first choice and is the better OCR model, but **every `gemini-*` slug on Zen was returning HTTP 500 on 2026-08-27** (3 retries × 3 slugs; `minimax-m3`/`kimi-k2.5` fine on the same key) — recheck and switch back when Zen's Gemini upstream recovers.
 - **PDFs never touch the vision model.** `tools/read_extract.py` shells out to poppler `pdftotext` and feeds plain text to the main model (DS4); `tools/vision_tools.py` normalizes every input to jpeg/png/gif/webp and has **no pdf branch**, so a Zen model's `pdf` modality flag is unreachable here and is NOT a selection criterion. ⚠️ Gap: a **scanned** PDF yields empty pages (warning footer appended) and does NOT fall back to OCR via the vision model.
@@ -157,24 +165,56 @@ re-test; the depth curve is the whole story here.
 - 🔴 **`session_reset.mode: both`, `idle_minutes: 180`, `at_hour: 4` (2026-08-25 22:46)** — this SUPERSEDES the earlier same-day `idle`/**1440** setting, which was itself the fix for `none`. 24 h idle **never fires on a thread with daily traffic**, so it changed nothing; 180 min + a 04:00 daily sweep does. Before any of it, `none` meant Telegram **topics never rotated**. Hermes keys one session per `chat_id:thread_id`, so each topic is an independent persistent conversation. General got reset by hand 37×/week (median life 2.5 h, prompt back to ~28k); Morning Briefing ran one session for 5 days (**151,920 tok**) and Night Plan for 49.6 h (**115,870 tok**). Those two paid 8–14 min full re-prefills whenever they lost a KV slot — median turn 631 s / 945 s vs General's 349 s. Policy is evaluated **per session entry** (`_should_reset` in `gateway/session.py` reads each entry's own `updated_at`), so every topic rotates on its own 3 h idle clock; the daily openers are posted straight to the Telegram API by `run_daily`, bypassing Hermes, so that clock runs from the last REAL exchange. ⚠️ **Not hot-reloaded — `GatewayConfig` is built at startup; restart `hermes-gateway.service`.** Valid modes: `none`/`idle`/`daily`/`both`. Resets are non-destructive: transcripts stay in `state.db` (`sessions.retention_days: 90`, `auto_prune: false`) and stay session-searchable.
 - ✅ **Slot starvation ADDRESSED 2026-08-25 — DS4 `parallel` 3 -> 4.** llama-watchdog's 60 s probe pins to `max(slot_id)` and so permanently owns one slot (MEASURED at -np 3: slot 2 took **6,534** requests at 97 tok avg over 5 days vs 862 / 1,184 real requests on slots 0 / 1). At -np 4 the probe sits on slot 3 and **three** slots hold conversations. Watchdog `pin_slot()` reads `max()` of the live `/slots` ids, so it followed with **no watchdog change** — verify this before any future slot-count change. VERIFIED live: slot 3 = 32 probes @ 1 tok, slot 2 = real traffic @ 5,326 tok avg. **Cost MEASURED: +1.08 GiB of GTT** (108.32 -> 109.40), 4x the ~0.25 GB the old 35b-derived estimate predicted. ⚠️ **Benefit is capped by the shared KV pool** — under kv-unified `n_ctx` is TOTAL, so a 4th slot adds NO KV: at the measured p90 prompt (119,394) three conversations need ~358k > 262,144 and evict anyway; at the median (65,835) three fit in ~198k. Helps typical turns, not the largest. See gotcha #15.
 
-### Overnight cycle (`overnight-tasks` cron, 23:00)
+### Epa Q — the queue that replaced the overnight cycle (2026-08-27)
 
-`~/Dev/automated-workflows/workers/overnight_tasks.py` → `overnight_swap.py` → `swap-model.sh`.
+Design + operations trail: `~/Dev/automated-workflows/epa_q/` (`REQUIREMENTS.md`,
+`RUNBOOK.md`, `BUILD_LOG.md`). Code: `~/Dev/automated-workflows/workers/epaq/`; state in
+`epaq.db` (repo root, git-ignored).
 
-- Skips entirely when there are no pending task files — no swap, no cold load.
-- Otherwise runs `swap-model.sh ds4`, which since 2026-08-20 is normally a **no-op confirmation** (DS4 is already resident). It is still FATAL on failure, because the only way it does real work is if a `qwen3.8-27b-q4` was hand-loaded, and the script's confirmed-eviction guard is what stops DS4 loading on top of it.
-- 🔴 **There is deliberately NO swap back** (removed 2026-08-20; `swap_to_qwen` and `QWEN_35B` are gone from `overnight_swap.py`, and the tests spec their mocks against the handler so a reintroduced swap-back fails loudly). Before this, the cycle ended by swapping to whatever `swap-model.sh`'s `QWEN` pointed at — which had become the Q4 — so every night with pending tasks would have evicted the daily driver.
+- **Executor** — the DS4 consumer. `epaq-dispatch` claims the next queued task and runs it
+  as one isolated non-interactive `hermes chat -q … -Q` session, pinned to local DS4
+  (`LLM_BASE_URL`/`LLM_MODEL`). **One task at a time** — Epa Q is the serialisation point,
+  so it never adds a *second* heavy agentic session on top of the briefings or an
+  interactive Hermes turn. No `swap-model.sh`, no cold load — DS4 is already resident.
+- **`ds4_lease`** (`workers/epaq/lease_client.py::ds4_lease`) — a single advisory-lock row
+  in `epaq.db`. The executor holds it for the duration of a task. `workers/run_daily.py`
+  wraps `build_delivery()` in `ds4_lease("morning-brief"|"evening-review")`: it requests a
+  pause, waits ≤90 s for the executor to **checkpoint and yield the slot**, takes the
+  lease for the briefing's model turn, then releases — and the executor **resumes from its
+  checkpoint** on the next dispatch tick. A time-critical briefing is never blocked: if the
+  executor does not yield in time the briefing proceeds anyway.
+- **Supervisor** (`run_epaq_supervise.py`, `epaq-supervise` */10) — watches the running
+  task. On the task's `/health` failure, or **critical** host-RAM pressure
+  (`_default_pressure()` reads `/proc/meminfo` `MemAvailable/MemTotal`: `warn` ≈ 4–10 % of
+  total, `critical` below that), it **pauses the executor with a cooldown and auto-resumes**
+  when the signal clears. This is the **first automated back-off in response to the
+  structural GTT oversubscription** described at `## Host` — see `## Alerting`. Smoke test
+  2026-08-27 observed `_default_pressure()` returning `warn` (nothing held).
+- **Crons:** `epaq-dispatch` (*/15), `epaq-supervise` (*/10) — `--no-agent --script`,
+  negligible cost (see the Cron pins bullet above).
+- 🔴 **The old `overnight-tasks` 23:00 cron (`overnight_tasks.py` → `overnight_swap.py` →
+  `swap-model.sh`) and its deliberate no-swap-back design were RETIRED 2026-08-27** — the
+  cron is paused, the one pending task was migrated. `gpu-price-watch` (a real DS4 agent
+  turn, Sat 06:00) is now an Epa Q recurring schedule; its old cron is paused too. The
+  `Evolve Email Classifier` and `remote job digest` crons are `--no-agent` scripts that
+  make no model call and were left alone.
 
 ## pi
 
 - **Config:** `~/.pi/agent/models.json` — provider `litellm` → `http://localhost:9292/v1`, apiKey `unused-llama-router-direct`, models deepseek-v4-flash + gemma4-e4b, DS4 contextWindow **262144** (briefly 131072 on 2026-08-25, reverted same day), maxTokens 16384. **`defaultModel: deepseek-v4-flash`**. pi-kalam (`~/Dev/pi-kalam`) config.ts already pins all roles to deepseek-v4-flash — no change needed there.
+- **2026-08-27:** pi-kalam's `src/steps/interview-core.ts` + `src/criteria-lint.ts` are now
+  re-export shims — the logic moved to the standalone **`kalam-elicit`** package
+  (`~/Dev/kalam-elicit`, consumed `"kalam-elicit": "file:../kalam-elicit"`); `ledger.ts`
+  keeps only pi-kalam's source-taxonomy adapter over the shared algebra. The same package
+  backs Hermes/Epa Q's `epaq-refine` bridge (`~/Dev/epaq-refine`). No model impact;
+  extraction verified behaviour-preserving (no test files changed, 1457 green on `main`).
 
 ## Services (systemd user units, all active)
 
 | service | port | role |
 |---|---|---|
 | `llama-router.service` | 9292 | llama.cpp router (models) |
-| `llama-watchdog.service` | 9611 | **THE alerting engine** (2026-08-25) — GPU device-lost + metrics relay + **host memory pressure + systemd unit outages**, all to the Telegram **topic 5** of `<SUPERGROUP_CHAT_ID>`. Reads `/proc` directly, so it does NOT depend on VM/exporters |
+| `llama-watchdog.service` | 9611 | **THE alerting engine** (2026-08-25) — GPU device-lost + metrics relay + **host memory pressure + systemd unit outages**, all to the Telegram **topic 5** of `<SUPERGROUP_CHAT_ID>`. Reads `/proc` directly, so it does NOT depend on VM/exporters. ⚠️ Epa Q's supervisor (see `### Epa Q`) is a **separate, consumer-scoped remediation** — it pauses one executor — and is NOT part of llama-watchdog, does not feed it |
 | `watchdog-heartbeat.timer` | — | dead-man check every 5 min — a **separate process** curling `:9611`, because a wedged watchdog still holds its port and still reads `active` |
 | `hindsight-daemon.service` | 9177 | Hermes memory daemon (bank `hermes`, embedded Postgres). **hindsight-all/api-slim/client/embed all at 0.9.2** (upgraded 2026-08-26, was 0.8.4/0.8.4/0.6.1/0.8.6). `HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS=1` (renamed 2026-08-26 from the deprecated `_MAX_SLOTS` — it was always a *minimum* floor despite the old name, not a maximum; same value, same behavior, deprecation warning gone) |
 | `hermes-gateway.service` | — | messaging (Telegram/Slack/WhatsApp) |
@@ -213,7 +253,12 @@ automatically** and retries HTML failures as plain text.
 | **host memory pressure** | `health_loop` — MemAvailable < 3.0 GiB, swap > 80%, direct-reclaim > 3.0×. 🔴 The reclaim check is SUPPRESSED while any model is `loading`: a ~98 GiB cold load drives reclaim to ~16× by design (measured) and would otherwise page on every router restart. MemAvailable/swap still apply during a load |
 | **unit outages** | `health_loop` — llama-router, hermes-gateway, both on-demand sockets |
 | **watchdog death** | `OnFailure=` + `watchdog-heartbeat.timer` |
+| **Epa Q executor stall / task `/health` fail / critical host-RAM** | **Epa Q supervisor** (`run_epaq_supervise.py`, `epaq-supervise` */10). REMEDIATION for one consumer, not an alert: pauses the executor + cooldown + auto-resume. Uses `/proc/meminfo` **ratio** thresholds, **uncoordinated** with `health_loop`'s absolute 3.0 GiB |
 
+⚠️ **Epa Q's RAM back-off vs `health_loop`:** on a 122.7 GiB box, Epa Q `critical`
+(< ~4.9 GiB `MemAvailable`) sits **above** `health_loop`'s 3.0 GiB alert threshold, so the
+supervisor will pause the executor **before** llama-watchdog ever fires a RAM alert. Do
+not read "no watchdog alert" as "no pressure" — the executor may already be backed off.
 ⚠️ `hindsight-daemon` is deliberately absent from `HEALTH_UNITS` — its HTTP probe
 is strictly stronger than `is-active`. 🔴 The reclaim check is a **rate between
 samples**; the cumulative `pgscan_direct/pgsteal_direct` quotient would latch
@@ -261,6 +306,7 @@ Consequences while unfirewalled — any LAN device can: use the models unauthent
 5. **Watchdog pins its 60s probe to the LAST slot** (`id_slot`) — an unpinned 2-token probe scores f_sim ~0, falls through to LRU, and overwrites the idle slot's cached prefix. Pinning confines damage to one slot.
 6. **DS4/LLM OOM path — ✅ CLOSED 2026-08-12.** A background reflect (Hindsight `extractor`) could name an unloaded ~98 GiB model and trigger a router autoload with nobody at the keyboard — this OOM-killed llama-server 2026-08-07 11:01:49. Fixed by retargeting reflect to the resident gemma4-e4b (see *Role → model mapping*); verified on the running process, and reflect exercised end-to-end. The watchdog heavy-model mutex is now **defence-in-depth, not the sole guard**.
    ⚠️ **The underlying hazard is unchanged** — the router still has zero memory awareness and `--models-max` still caps model COUNT, not SIZE. **Any** consumer pinned to an unloaded heavy model re-opens this. When adding or repointing a background/unattended caller, pin it to a *resident* model. On this box an OOM is not a tidy process kill: DS4's memory lives in amdgpu GTT and is invisible to the kernel OOM killer, so on 2026-08-06 it reaped the entire GNOME session (pipewire, xdg portals, wezterm, the user systemd manager) instead.
+   ✅ **Epa Q (2026-08-27) is compliant:** the executor is pinned to the RESIDENT DS4, and `epaq-dispatch` / `epaq-supervise` are `--no-agent --script` (no model call from the tick). The `ds4_lease` + supervisor add a consumer-level defence-in-depth layer alongside the watchdog heavy-model mutex.
 7. **Hindsight port landmine:** default local URL is :8888 which SearXNG owns. Always explicit `http://127.0.0.1:9177`.
 8. **Single-file bind-mount inode trap:** config files bind-mounted into containers are pinned to an INODE — editors that write temp-file-and-rename silently diverge. Verify via `/running`/behavior, not container health.
 9. **`persistent`/`load-on-startup` ≠ auto-load guarantee** — after restart, resident models may not be warm until first request. Warm them by hand.
@@ -275,5 +321,8 @@ Consequences while unfirewalled — any LAN device can: use the models unauthent
 ## Docs
 
 - **This canonical store:** `~/Dev/strix-halo-llm-stack/docs/infra/` (`current.md` + `changelog.md` + `README.md`), versioned in the `strix-halo-llm-stack` git repo (pushed to GitHub). **Note the split:** this repo holds code/config/docs; the **runtime model weights + live `config/models.ini` live in `~/llama-stack/`** (gitignored, mounted by `llama-router.service`) — never delete/move those.
+- **Epa Q** (the DS4 consumer added 2026-08-27, `### Epa Q` above): design + operations
+  trail at `~/Dev/automated-workflows/epa_q/` — `REQUIREMENTS.md`, `RUNBOOK.md` (cutover +
+  rollbacks), `BUILD_LOG.md`, `flow.html`.
 - **`~/docs/local-ai-stack.md`** — SUPERSEDED (last accurate 2026-05-15; describes removed granite-4.1-8b/LiteLLM/96 GiB). Kept for history only.
 - **`~/docs/infra-todo.md`** — backlog, last updated 2026-05-15.

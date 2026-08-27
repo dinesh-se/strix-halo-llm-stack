@@ -26,6 +26,99 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-27 (later) — Epa Q goes live: a proactive task queue replaces the overnight cycle; new DS4 consumer + advisory lease + supervisor RAM back-off
+
+**Observed.** The overnight batch cycle (`overnight-tasks` cron, 23:00) was a per-task-file
+workflow (`~/night-cycle-tasks/pending/*.md` → `workers/overnight_*.py`) that "coexisted"
+with the briefings and any interactive Hermes turn on the single resident DS4 only by luck
+— nothing serialised heavy agentic sessions, and the `swap-model.sh` qwen↔ds4 dance it
+carried was dead weight since 2026-08-20 (DS4 always resident). There was **no automated
+reaction to host-RAM pressure** — `llama-watchdog`'s `health_loop` alerts (Telegram topic 5)
+but does not remediate. Separately, `gpu-price-watch` (Sat 06:00) ran a full agent turn on
+`custom:local-models` as an unattended cron with no coordination.
+
+**Changed.** Built **Epa Q** — a proactive, Epa-owned task queue — in
+`~/Dev/automated-workflows` and cut it over live.
+- New package `workers/epaq/` (`store.py`, `dispatcher.py`, `executor.py`, `supervisor.py`,
+  `refine.py`, `refine_cli.py`, `entry.py`, `queue_cli.py`, `notify.py`, `dashboard.py`,
+  `dashboard_cli.py`, `design_context.py`, `cron.py`, `lease_client.py`,
+  `migrate_overnight.py`) + entrypoints `workers/run_epaq_{dispatch,supervise,migrate_overnight}.py`.
+  State in `epaq.db` (repo root, git-ignored via `*.db`).
+- **DS4 consumer:** the *executor* runs one queued task at a time as an isolated
+  `hermes chat -q … -Q` session pinned to local DS4 (`LLM_BASE_URL`/`LLM_MODEL`). One at a
+  time = Epa Q is the serialisation point.
+- **`ds4_lease`** (`workers/epaq/lease_client.py::ds4_lease`, a row in `epaq.db`):
+  `workers/run_daily.py::run` now wraps `build_delivery()` in
+  `ds4_lease("morning-brief"|"evening-review")` — the briefing requests a pause, the
+  executor checkpoints/yields, the briefing takes the slot, the executor resumes next tick.
+  Never blocks a time-critical briefing.
+- **Supervisor** (`epaq-supervise` */10): on task `/health` fail or **critical** host-RAM
+  (`_default_pressure()` on `/proc/meminfo` `MemAvailable/MemTotal`) it pauses the executor
+  with a cooldown and auto-resumes — the first automated back-off against the structural
+  GTT oversubscription. Uncoordinated with `health_loop` (ratio vs absolute 3.0 GiB); on a
+  122.7 GiB box it trips *before* the watchdog alert.
+- **Crons:** `hermes cron create --no-agent --script` × 2 — `epaq-dispatch` `0fd2c2ecdaed`
+  (*/15), `epaq-supervise` `b97ea1e859c6` (*/10). `.sh` wrappers redirect to their own
+  logs so the cron tick is silent; notifications go out via the Telegram API inside the
+  tick, not via cron delivery.
+- **Retirements:** `hermes cron pause db57bc4aaed3` (`overnight-tasks`) — its one pending
+  task (`ntc-023`) migrated into Epa Q as `captured`, original moved to
+  `~/night-cycle-tasks/migrated/`. `hermes cron pause b7c86f0f43f4` (`gpu-price-watch`) —
+  recreated as Epa Q recurring schedule id 1 (`0 6 * * 6`, prompt copied verbatim).
+  `Evolve Email Classifier` + `remote job digest` left alone (`--no-agent` scripts, no
+  model call). `overnight-archive` still runs.
+- **kalam-elicit:** pi-kalam's `interview-core.ts` + `criteria-lint.ts` extracted to a
+  standalone package (`~/Dev/kalam-elicit`, local-only git) and merged to pi-kalam `main`
+  (`b2bae30`, unpushed); `~/Dev/epaq-refine` (local-only) is the JSON bridge over it that
+  Epa Q's Python calls.
+- Commit status: `~/Dev/automated-workflows` `master` (`48d7e94` … `1e650ee`, path-scoped —
+  unrelated WIP untouched). `python -m pytest tests/` → **1168 passed**.
+
+**Expected.** Exactly one heavy local-DS4 consumer at a time by construction; the briefings
+coexist with a running executor task without either evicting the other's prompt cache; a
+stalled / `/health`-failing / RAM-pressured task is paused and auto-resumed instead of
+thrashing DS4. Serving layer untouched (`models.ini`, `np`, `llama-router` unchanged; DS4
+stays `parallel = 4`).
+
+**Refs:** `~/Dev/automated-workflows/epa_q/{REQUIREMENTS,RUNBOOK,BUILD_LOG}.md`;
+`workers/epaq/{store,dispatcher,executor,supervisor,lease_client,notify}.py`;
+`workers/run_daily.py::run`; `hermes cron` (native `--no-agent --script` mode);
+`~/llama-stack/config/models.ini` (`parallel = 4`, verified live against
+`docker logs llama-router | grep -- '--parallel'`).
+
+**Smoke test.** Live battery, 2026-08-27, epaq crons paused during the run, smoke data
+purged + crons resumed after:
+1. `hermes chat -q "…" -Q` non-interactive — replied, exit 0. ✅
+2. Entry: `queue_cli submit-text "Epa, queue: [high] …"` → captured, priority=high;
+   `spawn --idea` linked `idea_ref`. ✅
+3. Refine: `refine_cli begin → save → gate → finalize` — `gate` returned CLOSED with an
+   open boundary (+ the `renderBoundaryGateSnapshot` nudge), OPEN once resolved;
+   `criteria-lint` rejected "the feature works correctly" through the real `epaq-refine`
+   `npx tsx` call; task → `refined` → `enqueued`. ✅
+4. Full path: `run_epaq_dispatch` claimed the task, ran a real `hermes chat` on DS4, wrote
+   an ISO-8601 timestamp to `/tmp/epaq-smoke-1.txt`, emitted `SUCCESS:`, `completed` in
+   ~25 s; 8 lifecycle events drained to Telegram (`failed: 0`). ✅
+5. Blocked: model emitted `NEEDS_INPUT:` → task `blocked` (clarification) with the exact
+   question stored; `resume` → `running` → `complete`. ✅
+6. Supervisor: `last_progress_at` back-dated 700 s → `run_epaq_supervise` chose `nudge`,
+   requeued with `nudge_count=1`; `_default_pressure()` returned **`warn`** (health `True`)
+   so nothing was held. ✅
+7. Schedule: a throwaway `*/5` schedule with a back-dated marker → dispatch materialised
+   its fires and ran the first one end to end. ✅
+8. Briefing lease: `ds4_lease("morning-brief")` acquired + released clean; both
+   `run_daily --delivery {morning,evening} --no-post` built exit 0; lease free after. ✅
+9. Dashboard: `dashboard_cli text|json|html`, and `serve --port 9188` + `/api/snapshot`
+   responded. ✅
+
+**Follow-up.** ⏳ Hermes-level updates are a separate handoff: the skills
+(`ai-infra-state`, `epa-q-queue` / `epa-q-refine` / `epa-q-dashboard`, `idea-capture`),
+`~/AGENTS.md`, and the `morning-brief` cron prompt's now-moot "did the night cycle run /
+stale Night Plan" paragraph. ⏳ `overnight-archive` can be retired once `completed/` stops
+changing. ⏳ `ntc-023` sits `captured` in the backlog — Dinesh releases it by hand (it
+commits + pushes to a real repo).
+
+---
+
 ## 2026-08-27 — Hermes aux vision: OpenCode Zen's per-model endpoints, and the picker that never writes `api_mode`
 
 **Observed.** `auxiliary.vision` had been set up the previous day as `provider: opencode-zen`,

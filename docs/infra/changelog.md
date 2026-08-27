@@ -5,6 +5,10 @@ Hermes, pi, Hindsight, LiteLLM/observability). One entry per change, newest
 first. Update this file in the same session as any infra change — see
 `feedback_update_memory_after_infra_change` in Claude's memory.
 
+> **Redaction note:** `<mac-user>` / `<mac-host>` in quoted logs below are placeholders for the
+> Mac's local username and hostname, scrubbed because this repo is public. They are literal in
+> the original journal output.
+
 **Entry format:**
 ```
 ## YYYY-MM-DD — Title
@@ -114,7 +118,7 @@ achieved. `journalctl -u automated-workflows`:
 ```
 Aug 26 21:57:28 strix-halo python3[7283]: [tick_off] token=7 ok=False
   Couldn't tick off Plan Trichendur trip —
-  dineshmbair@dineshs-macbook-air.local: Permission denied (publickey,password,keyboard-interactive).
+  <mac-user>@<mac-host>.local: Permission denied (publickey,password,keyboard-interactive).
 ```
 
 Root cause: `~/.ssh/id_ed25519` is **passphrase-encrypted** (`aes256-ctr`/`bcrypt`), and
@@ -156,7 +160,7 @@ too, which until now depended on gnome-keyring happening to be unlocked.
 **Smoke test — run under the unit's actual conditions, not from a shell.**
 - Reproducer before the fix, and the proof after:
   `env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_automation_ed25519 …`
-  → `OK` / `dineshmbair` (old key under the same conditions: `Permission denied`).
+  → `OK` / `<mac-user>` (old key under the same conditions: `Permission denied`).
 - Personal key still works interactively; `authorized_keys` holds **both** fingerprints.
 - Preflight under the unit's real interpreter and environment
   (`env -u SSH_AUTH_SOCK PYTHONPATH=…/.local/lib/python3.12/site-packages /usr/bin/python3`):

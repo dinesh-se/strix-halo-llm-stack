@@ -1,10 +1,15 @@
 # AI Infra — Current State
 
-> **Last verified:** 2026-08-26 — VictoriaMetrics + node-exporter + amdgpu-exporter retired (see changelog).
+> **Last verified:** 2026-08-26 21:35 — Qwen3.8-Flash-Next evaluated (standalone :10098 eval
+> container, never touched `models.ini`) and REJECTED as a DS4 replacement — decode at real
+> workload depth is WORSE than DS4, not just blocked by upstream issues (see changelog + the
+> Qwen3.8-Flash-Next section below). Hindsight per-op LLM routing regressed to a cloud
+> endpoint and was fixed same session (see Hermes section). GRUB flags SSoT drift fixed.
+> Prior: 2026-08-26 09:0x — VictoriaMetrics + node-exporter + amdgpu-exporter retired (see changelog).
 > Prior: 2026-08-25 — host RAM pressure work (Firecrawl socket-activated, sysctl tuned; see changelog).
-> Model/router state is UNCHANGED by that work and was last verified 2026-08-20 (from live system — router `:9292` after a clean
-> restart, `docker inspect` mounts, child argv, cron pins, and the running
-> watchdog process. **qwen3.8-27b evaluation CLOSED: DS4 is the daily driver
+> Model/router state (DS4 + gemma resident, qwen3.8-27b-q4 on-demand) is UNCHANGED and was
+> reverified live at the end of this session (router `/models`, GTT, `hermes status`).
+> **qwen3.8-27b evaluation CLOSED: DS4 is the daily driver
 > again, qwen3.8-27b-q4 is on-demand only, and the Q8_0 twin is deleted.**)
 > This is the living snapshot. Read this before any infra change. Ground truth
 > is the config files themselves; if this file disagrees with them, trust the
@@ -15,7 +20,7 @@
 - **Machine:** Beelink GTR9 Pro — AMD Ryzen AI MAX+ 395 (Strix Halo), Radeon 8060S (gfx1151, RDNA 3.5), 128 GB unified memory, Ubuntu (kernel 7.0.0-29).
 - **Host RAM pressure (2026-08-25):** GTT holds **109.11 GiB of 122.7 GiB**, leaving only **13.59 GiB** for the entire OS and every service. Process RSS totals just 7.1 GiB — **the memory is in GTT and does NOT show in `ps`**, so "nothing is using it" is a misread. 🔴 **The 103.3 GiB figure below (98.4 DS4 + 4.9 gemma) is STALE by +5.81 GiB** — it was measured at `ctx 131072` bare; DS4 runs `ctx 262144 parallel 3` and gemma `ubatch-size 2048 parallel 4`, and compute buffers scale with ubatch × slots. Partly decomposed 2026-08-25: **`ctx` IS a lever — 262144 -> 131072 returned 2.58 GiB** (measured), well above the ~0.6 GiB the 4.5 MiB/1k KV figure predicts, because compute buffers scale with ctx as well as with ubatch x slots. The earlier "`ctx` is NOT the lever" claim was wrong. ⚠️ **But that 2.58 GiB is NOT claimable** — 128k does not fit the workload (see the DS4 row) and the change was reverted the same day. Remainder still undecomposed — MEASURE, do not estimate.
 - **VM tuning:** `/etc/sysctl.d/99-llm-host-memory.conf` — `vm.swappiness=10`, `vm.vfs_cache_pressure=50` (2026-08-25). GTT is **unswappable**, so at the stock swappiness=60 the only reclaimable pages were the working sets of hermes / hindsight-daemon / llama-router — they were being paged out and had to fault back in before answering, which is what "Hermes is slow" actually was.
-- **VRAM model:** GTT memory model — BIOS UMA carveout at **512 MB minimum**, so the iGPU reaches ~124 GiB drawing from system RAM. `ttm.pages_limit=32505856`, `amd_iommu=off`, `amdgpu.dcdebugmask=0x12`, `amdgpu.lockup_timeout=10000,60000,10000,10000` in GRUB. `nogttspill` REMOVED (GTT is the memory model, not an overflow path).
+- **VRAM model:** GTT memory model — BIOS UMA carveout at **512 MB minimum**, so the iGPU reaches ~124 GiB drawing from system RAM. 🔴 **SSoT drift fixed 2026-08-26 — this used to list only four of the SIX flags actually in `/etc/default/grub`.** All six, verbatim from `GRUB_CMDLINE_LINUX_DEFAULT`: `amd_iommu=off`, `amdgpu.dcdebugmask=0x12`, `ttm.pages_limit=32505856`, `ttm.page_pool_size=32505856`, `amdgpu.gttsize=126976`, `amdgpu.lockup_timeout=10000,60000,10000,10000`. **`amdgpu.gttsize=126976` is 124 GiB and is the actual source of the "~124 GiB usable" figure above** — it was previously undocumented here. `nogttspill` REMOVED (GTT is the memory model, not an overflow path). ⚠️ `/etc/default/grub` is a dpkg conffile owned by `grub2-common` — a package upgrade that offers "install the maintainer's version" will wipe all six; always keep the locally-modified version.
 
 ## Router / serving
 
@@ -34,6 +39,48 @@
 | `deepseek-v4-flash` | UD-IQ3_XXS, ~98.4 GiB | **RESIDENT at boot** (2026-08-15) | **262144** | **4, kv-unified** (3 -> 4 on 2026-08-25) | **19.48 decode / 268.98 prefill @pp2053** (MEASURED live 2026-08-12) | primary resident heavy model: Hermes/pi default, all 5 pi-kalam roles, Hindsight reflect, email digest. sps 0.5, cache-reuse 256, no dspark sidecar (OOM-killed 2026-08-06). Cold load 3–11 min. Coexists only with gemma4-e4b (98.4+4.9 = 103.3 GiB < 120 GiB cap). `n_ctx_train` is **1048576** — we run 25% of it. 🔴 **Briefly lowered to 131072 on 2026-08-25 and REVERTED the same day — 128k does not fit this workload.** MEASURED over 38 Telegram sessions / 7 d: mean prompt/call **median 65,835, p90 119,394, max 129,403**. At ctx 131072 the INPUT budget is only 98,304 (window minus Hermes' `max_tokens` 32768 reservation), so **p90 traffic does not fit**, and the median already exceeded the 64,000 compaction threshold. Session lifespan barely moves this (sub-2h sessions already median 60,614), so `session_reset` does not rescue a smaller window — the size comes from tool-heavy agentic turns inside ONE session. The 131072 experiment did return **2.58 GiB of GTT** (108.65 -> 106.07), which is 4x the KV-only estimate — so **`ctx` IS a memory lever** — but that memory is not available at an acceptable fit. Under kv-unified `n_ctx_slot == ctx-size`, NOT split |
 | **`qwen3.8-27b-q4`** | **UD-Q4_K_XL, ~34.2 GiB resident** | **on-demand — the ONLY swap target** | 262144 | 1, kv-unified | **31.3 / 32.6 decode** (MEASURED in prod 2026-08-19); 12.4 spec-off | `spec-type = draft-mtp`, **`spec-draft-n-max = 5`**. sha256 `3f227079…bc8b01e`. **Evaluated 2026-08-19 and REJECTED as a daily driver** — faster per token than DS4 but `parallel = 1` with reasoning always on, so it loses on real multi-caller work. MTP embedded (`blk.64.nextn.*`), no sidecar. The Q8_0 twin was deleted 2026-08-20 (section + 29 GB GGUF) |
 
+### Qwen3.8-Flash-Next (`qwen4exp`) — evaluated 2026-08-26, REJECTED as a DS4 replacement
+
+⚠️ **Not integrated — this was a standalone eval container on :10098, never added to `models.ini`.**
+Released same-day (125B MoE, 6B active, +51B n-gram embedding table, GDN+QSA hybrid
+attention). Built from mainline llama.cpp + unmerged PR #27742
+(`035e22731a7fd70b9854b3a2d64ec68e9b1a45d3`) inside the prod `kyuz0/amd-strix-halo-toolboxes`
+image (Vulkan/Mesa userspace identical to prod; only llama.cpp itself differs). Build artifacts
+kept at `~/llama-stack/eval-qwen4exp/` for reference (SHA-pinned; the PR has since moved).
+Two build gotchas hit and fixed, neither specific to this PR: (1) `/etc/alternatives/ld` is a
+**dangling symlink in the base image** — `-fuse-ld=bfd` or relinking it fixes `collect2: cannot
+find 'ld'`; (2) the built `llama-server` resolves `libllama.so` from the container's **system**
+`/usr/lib64` (the prod fork's old libs) unless `LD_LIBRARY_PATH` points at the build's own
+`bin/` — silently runs the wrong binary otherwise, symptom is `unknown model architecture`.
+
+**🔴 REJECTED — decisive, not just blocked.** At the median REAL Hermes prompt depth
+(**65,835 tokens**, measured 2026-08-25 over 38 sessions), decode was **10.78 t/s — 55% of
+DS4's 19.48 baseline, i.e. WORSE than DS4**, despite a +18–33% headline advantage at shallow
+depth (pp512/pp2053, matching a [r/StrixHalo report](https://www.reddit.com/r/StrixHalo/comments/1vz5yb3/)
+on equivalent hardware). Prefill degraded smoothly and monotonically with depth (274 t/s @2k →
+173 t/s @66k → still falling, 153 t/s @90k, no plateau) — this is not a bug to fix, it is the
+architecture's cost profile at the context lengths this workload actually uses. p90 depth
+(119,394) was not fully measured (client timeout at 600s, server-side 77% through with no
+sign of recovery) but the trend leaves no realistic path to competitive numbers there.
+
+Two structural findings, independent of the throughput verdict:
+- **Memory moves from GTT to host RAM, not away entirely.** At ctx 131072, GTT was only
+  **72.36 GiB** (vs DS4's 98.4) — genuinely better than DS4 on the GPU-memory axis. But the
+  51B-param n-gram table is mmap'd to host RAM (`--load-mode none`), and **prefill** (not just
+  decode) pulls enough of it through page cache that `MemAvailable` fell from 111 GiB to
+  14–19 GiB under load — the same metric `llama-watchdog`'s `health_loop` alerts on below
+  3 GiB. Not measured at ctx 262144 (the ctx this workload actually needs) due to time budget.
+- **The reported multi-slot desync assert did not reproduce** in limited testing (`-np 2`,
+  both explicit dual-slot concurrent requests and 4 sequential auto-routed ones) — but this is
+  **not proof it's fixed**; the specific LRU-driven handoff the PR thread describes wasn't
+  specifically forced. Report as unresolved, not resolved.
+
+**Re-check trigger:** not on a timer. Revisit only if the decode-at-depth curve changes
+materially — MTP landing (the PR author confirmed WIP, not yet available) is the most likely
+lever, since it's a bigger multiplier than anything else measured on this box (`qwen3.8-27b-q4`
+gained ~2.5x from MTP tuning alone). A shallow-context headline number is not a reason to
+re-test; the depth curve is the whole story here.
+
 **Model swap:** `~/Dev/strix-halo-llm-stack/tools/swap-model.sh {ds4|qwen|status}` (path corrected 2026-08-10 — it is NOT `~/llama-stack/swap-model.sh`; that is runtime data and holds no scripts). `qwen` means **qwen3.8-27b-q4**. Both directions measured at **~23 s**, and the script refuses to load a second heavy model unless the first is CONFIRMED evicted. Image-gen (sd.cpp ~19 GiB GTT + 8.7 GiB host RAM) still requires an eviction wrapper.
 
 🔴 **`HEAVY_OTHERS` in `swap-model.sh` and `HEAVY_MODELS` in `watchdog.env` must stay in lockstep** — both list every heavy id, and a stale list in either is a real OOM path, not cosmetics (that is exactly how the 08-19 `swap-model.sh ds4` bug passed its eviction guard vacuously). Both were trimmed to `qwen3.8-27b-q4,deepseek-v4-flash` on 2026-08-20.
@@ -51,28 +98,48 @@
 - `memory-writer` → **gemma4-e4b** (Hindsight retain + consolidation, `HINDSIGHT_API_RETAIN_LLM_MODEL` + `HINDSIGHT_API_CONSOLIDATION_LLM_MODEL`)
 - ⚠️ These are pinned by hand in consumer config; there is no alias indirection anymore. Swap a model → edit all consumers.
 
-> ✅ **RESOLVED 2026-08-12 — all three Hindsight roles now run on gemma4-e4b.**
-> The 2026-08-09 retarget had been written into this file and the `models.ini`
-> header but **never applied to the unit** (caught 2026-08-10, still unapplied on
-> 08-12). It is now applied and verified on the *running process*, not just the
-> unit file:
+> ✅ **RESOLVED 2026-08-12, REGRESSED + RE-FIXED 2026-08-26.** All three
+> Hindsight roles run on gemma4-e4b via the LOCAL router, verified on the
+> *running process* (PID 213140):
 >
 > ```
-> /proc/<MainPID>/environ → HINDSIGHT_API_REFLECT_LLM_MODEL=gemma4-e4b
+> /proc/<MainPID>/environ →
+>   HINDSIGHT_API_REFLECT_LLM_MODEL=gemma4-e4b        HINDSIGHT_API_REFLECT_LLM_BASE_URL=http://127.0.0.1:9292/v1
+>   HINDSIGHT_API_RETAIN_LLM_MODEL=gemma4-e4b         HINDSIGHT_API_RETAIN_LLM_BASE_URL=http://127.0.0.1:9292/v1
+>   HINDSIGHT_API_CONSOLIDATION_LLM_MODEL=gemma4-e4b  HINDSIGHT_API_CONSOLIDATION_LLM_BASE_URL=http://127.0.0.1:9292/v1
 > ```
 >
 > Check it that way, not with `systemctl --user cat` alone — the 2026-08-01
 > failure was a gateway-spawned orphan holding :9177 while carrying **none** of
-> the unit's env. Also confirm `:9177` is owned by `MainPID`.
+> the unit's env. Also confirm `:9177` is owned by `MainPID` (`ss -ltn`, `/health`
+> returns `"database":"connected"`).
 >
-> **This one line was the whole change:** only the three role vars are set, the
-> bank config overrides no models, and `ReflectRequest` has no per-request model
-> field — so nothing else silently stayed on DS4.
-> Rollback: `~/.config/systemd/user/hindsight-daemon.service.bak-20260812-pre-reflect-gemma4`.
+> 🔴 **2026-08-26 regression:** the three `Environment=*_LLM_MODEL` lines were
+> found MISSING from the unit — present only as comments — almost certainly
+> dropped by the same-day hindsight-all 0.8.4→0.9.2 upgrade and the
+> `_MAX_SLOTS`→`_RESERVED_SLOTS` rename. All three roles had silently fallen
+> through to the global `EnvironmentFile` (`~/.hindsight/profiles/hermes.env`),
+> whose `HINDSIGHT_API_LLM_BASE_URL` is `https://opencode.ai/zen/v1` — **a paid
+> cloud endpoint, not the local router.** Consequence: personal memory content
+> was leaving the box, and `HINDSIGHT_API_LLM_STRICT_SCHEMA=true` (the fix for
+> the 11.7% consolidation failure rate) was **inert**, since GBNF grammar
+> enforcement is a llama.cpp-only feature opencode.ai does not implement. Not an
+> OOM risk — a cloud endpoint cannot trigger a local heavy-model autoload, so
+> gotcha #6 stayed closed throughout.
 >
-> **The lesson from 08-09→08-12 stands even though the bug is fixed:** docs and
-> ini comments asserted a fix that did not exist for three days. Config beats
-> prose — verify against the running process.
+> 🔴 **"Model only" is not a sufficient fix, and the old comment claiming so was
+> wrong.** `memory_engine.py` resolves base_url with the identical fallback
+> chain as model — `retain_base_url = retain_llm_base_url or config.retain_llm_base_url
+> or memory_llm_base_url` — so a model-only override just sends the new model id
+> to whatever the global base_url currently is. **Both** `*_LLM_MODEL` and
+> `*_LLM_BASE_URL` must be set per op, explicitly, every time. `*_LLM_API_KEY`
+> was left on the global `dummy_key` fallback — the local router does not check it.
+> Rollback: `~/.config/systemd/user/hindsight-daemon.service.bak-20260826-pre-model-restore`
+> (also still has the 08-12 backup for the original fix).
+>
+> **The lesson from 08-09→08-12 (and now 08-26) stands:** docs and ini comments
+> asserted a fix that did not exist. Config beats prose — verify against the
+> running process, every time, even for something "already fixed."
 
 ## Hermes
 
@@ -83,8 +150,11 @@
 - ⚠️ **A running Hermes session keeps its pinned model in session state** — config changes do not move it retroactively. Start a new session (or switch in-session) to pick up a `model.default` change. This is what left the user on the slow Q8_0 on 08-19.
 - **Cron model pins (both on `deepseek-v4-flash` as of 2026-08-20):** `morning-check-in` `827131b2c8b5` (07:30), `night-check-in` `5d37a9e1e859` (21:35). Every other job runs `model: null` and therefore resolves to `model.default`. 🔴 **These pins are the load-bearing guard for gotcha #6** — an unattended job naming an unloaded ~98 GiB model is the OOM path. Re-check them after ANY model swap.
 - Aux roles (compression, title_generation, curator, background_review, delegation) → **gemma4-e4b** at :9292
-- `agent.disabled_toolsets: []` (delegation re-enabled)
-- 🔴 **`session_reset.mode: idle`, `idle_minutes: 1440` (2026-08-25)** — was `none`, which meant Telegram **topics never rotated**. Hermes keys one session per `chat_id:thread_id`, so each topic is an independent persistent conversation. General got reset by hand 37×/week (median life 2.5 h, prompt back to ~28k); Morning Briefing ran one session for 5 days (**151,920 tok**) and Night Plan for 49.6 h (**115,870 tok**). Those two paid 8–14 min full re-prefills whenever they lost a KV slot — median turn 631 s / 945 s vs General's 349 s. Policy is evaluated **per session entry**, so every topic now rotates on its own 24 h idle clock. ⚠️ **Not hot-reloaded — `GatewayConfig` is built at startup; restart `hermes-gateway.service`.** Valid modes: `none`/`idle`/`daily`/`both`. Resets are non-destructive: transcripts stay in `state.db` (`sessions.retention_days: 90`, `auto_prune: false`) and stay session-searchable.
+- 🔴 **`auxiliary.vision` is the ONE aux role not on local hardware (2026-08-27):** `provider: opencode-zen`, `model: minimax-m3` — a **paid** OpenCode Zen model ($0.30 in / $1.20 out per M; a 350-token OCR call measured `"cost": "0.00014442"`). It exists because `deepseek-v4-flash` is text-only, so `decide_image_input_mode()` returns `"text"` and every image is routed to this aux client. 🔴 **OpenCode Zen serves different models on different API surfaces** and the transport is picked from `auxiliary.<task>.api_mode`: `gpt-*`/`grok-*` → `/v1/responses`, `claude-*`/`qwen*` → `/v1/messages` (base_url loses its `/v1`), everything else → `/v1/chat/completions` (`hermes_cli/models.py::opencode_model_api_mode`). 🔴 **The `hermes model` → "Configure auxiliary models…" picker never writes `api_mode`** — `hermes_cli/main.py::_save_aux_choice` writes exactly `provider`/`model`/`base_url`/`api_key` — so picking a `gpt-*`/`claude-*`/`qwen*` Zen model there yields a plain `OpenAI` client aimed at the WRONG endpoint, with no config error. **Therefore: only ever put a natively `chat_completions` Zen model in this slot.** ⚠️ `gemini-3.5-flash-lite` was the first choice and is the better OCR model, but **every `gemini-*` slug on Zen was returning HTTP 500 on 2026-08-27** (3 retries × 3 slugs; `minimax-m3`/`kimi-k2.5` fine on the same key) — recheck and switch back when Zen's Gemini upstream recovers.
+- **PDFs never touch the vision model.** `tools/read_extract.py` shells out to poppler `pdftotext` and feeds plain text to the main model (DS4); `tools/vision_tools.py` normalizes every input to jpeg/png/gif/webp and has **no pdf branch**, so a Zen model's `pdf` modality flag is unreachable here and is NOT a selection criterion. ⚠️ Gap: a **scanned** PDF yields empty pages (warning footer appended) and does NOT fall back to OCR via the vision model.
+- Vision config is **hot** — `_get_auxiliary_task_config()` calls `load_config_readonly()` per call and that cache is keyed on `(path, mtime_ns, size)`, while the aux client cache key includes the model. No gateway restart needed for an `auxiliary.vision` model change (unlike `session_reset`, which is built into `GatewayConfig` at startup).
+- `agent.disabled_toolsets: ['computer_use']` — delegation stays enabled; **`computer_use` was disabled 2026-08-26 17:25** (backup `config.yaml.bak-20260826-pre-computeruse`, which still shows `[]`). ⚠️ **Rationale not recorded** in this log or in memory at the time — reconstruct before re-enabling.
+- 🔴 **`session_reset.mode: both`, `idle_minutes: 180`, `at_hour: 4` (2026-08-25 22:46)** — this SUPERSEDES the earlier same-day `idle`/**1440** setting, which was itself the fix for `none`. 24 h idle **never fires on a thread with daily traffic**, so it changed nothing; 180 min + a 04:00 daily sweep does. Before any of it, `none` meant Telegram **topics never rotated**. Hermes keys one session per `chat_id:thread_id`, so each topic is an independent persistent conversation. General got reset by hand 37×/week (median life 2.5 h, prompt back to ~28k); Morning Briefing ran one session for 5 days (**151,920 tok**) and Night Plan for 49.6 h (**115,870 tok**). Those two paid 8–14 min full re-prefills whenever they lost a KV slot — median turn 631 s / 945 s vs General's 349 s. Policy is evaluated **per session entry** (`_should_reset` in `gateway/session.py` reads each entry's own `updated_at`), so every topic rotates on its own 3 h idle clock; the daily openers are posted straight to the Telegram API by `run_daily`, bypassing Hermes, so that clock runs from the last REAL exchange. ⚠️ **Not hot-reloaded — `GatewayConfig` is built at startup; restart `hermes-gateway.service`.** Valid modes: `none`/`idle`/`daily`/`both`. Resets are non-destructive: transcripts stay in `state.db` (`sessions.retention_days: 90`, `auto_prune: false`) and stay session-searchable.
 - ✅ **Slot starvation ADDRESSED 2026-08-25 — DS4 `parallel` 3 -> 4.** llama-watchdog's 60 s probe pins to `max(slot_id)` and so permanently owns one slot (MEASURED at -np 3: slot 2 took **6,534** requests at 97 tok avg over 5 days vs 862 / 1,184 real requests on slots 0 / 1). At -np 4 the probe sits on slot 3 and **three** slots hold conversations. Watchdog `pin_slot()` reads `max()` of the live `/slots` ids, so it followed with **no watchdog change** — verify this before any future slot-count change. VERIFIED live: slot 3 = 32 probes @ 1 tok, slot 2 = real traffic @ 5,326 tok avg. **Cost MEASURED: +1.08 GiB of GTT** (108.32 -> 109.40), 4x the ~0.25 GB the old 35b-derived estimate predicted. ⚠️ **Benefit is capped by the shared KV pool** — under kv-unified `n_ctx` is TOTAL, so a 4th slot adds NO KV: at the measured p90 prompt (119,394) three conversations need ~358k > 262,144 and evict anyway; at the median (65,835) three fit in ~198k. Helps typical turns, not the largest. See gotcha #15.
 
 ### Overnight cycle (`overnight-tasks` cron, 23:00)

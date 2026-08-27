@@ -22,6 +22,162 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-27 — Hermes aux vision: OpenCode Zen's per-model endpoints, and the picker that never writes `api_mode`
+
+**Observed.** `auxiliary.vision` had been set up the previous day as `provider: opencode-zen`,
+`model: gpt-5.4-nano` and was silently broken. A read-only probe against the live config:
+
+```
+$ .venv/bin/python -c "from agent.auxiliary_client import resolve_vision_provider_client; ..."
+provider opencode-zen  model gpt-5.4-nano  client OpenAI
+client base_url https://opencode.ai/zen/v1/
+```
+
+A bare `OpenAI` client POSTs to `/zen/v1/chat/completions`. But **OpenCode Zen serves different
+models on different API surfaces** (`hermes_cli/models.py::opencode_model_api_mode`): `gpt-*` and
+`grok-*` → `/v1/responses`, `claude-*`/`qwen*` → `/v1/messages` (base_url loses its `/v1`),
+everything else → `/v1/chat/completions`. Verified live:
+
+```
+gemini-3.5-flash-lite  chat_completions      https://opencode.ai/zen/v1
+gpt-5-nano             codex_responses       https://opencode.ai/zen/v1
+gpt-5.4-nano           codex_responses       https://opencode.ai/zen/v1
+qwen3.5-plus           anthropic_messages    https://opencode.ai/zen
+claude-3-5-haiku       anthropic_messages    https://opencode.ai/zen
+```
+
+The transport comes from `auxiliary.<task>.api_mode`
+(`_resolve_task_provider_model` → `cfg_api_mode` → `resolve_provider_client(api_mode=)` →
+`_wrap_if_needed`). 🔴 **Root cause: `hermes_cli/main.py::_save_aux_choice` writes exactly four
+fields — `provider`, `model`, `base_url`, `api_key` — and never `api_mode`.** So the `hermes model`
+→ "Configure auxiliary models…" picker cannot express a non-default transport, and choosing any
+`gpt-*`/`claude-*`/`qwen*` Zen model there produces a client pointed at the wrong endpoint with no
+config error and no warning. Not user error.
+
+**Changed.** `~/.hermes/config.yaml`, `auxiliary.vision.model` only (backup
+`config.yaml.bak-20260827-pre-vision`; edited inode-preserving):
+`gpt-5.4-nano` → **`minimax-m3`**. No `api_mode` key added — deliberately: `minimax-m3` is natively
+`chat_completions`, so the setting survives a future re-pick in the wizard. `base_url`/`api_key`
+stay empty (`PROVIDER_REGISTRY["opencode-zen"].inference_base_url` already gives
+`https://opencode.ai/zen/v1`; the key resolves from `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env`,
+which the gateway reads itself — no shell-vs-service divergence).
+
+🔴 **The intended pick was `gemini-3.5-flash-lite`** (better OCR, same $0.30 input). It could not be
+deployed: **every `gemini-*` slug on Zen returned HTTP 500** — `gemini-3.5-flash-lite` ×3 retries,
+plus `gemini-3-flash`, `gemini-3.5-flash`, `gemini-3.6-flash` — while `minimax-m3` and `kimi-k2.5`
+answered 200 on the same key in the same minute. An upstream Zen/Gemini outage, not a config fault.
+Recheck and switch back when it recovers.
+
+**Expected.** Images sent to Hermes (text-only DS4 → `decide_image_input_mode()` returns `"text"`)
+are analysed by a cheap paid Zen model over the transport Hermes actually uses, instead of failing
+on a wrong-endpoint POST.
+
+**Refs.** `hermes_cli/models.py::opencode_model_api_mode` / `normalize_opencode_base_url`;
+`hermes_cli/main.py::_save_aux_choice`; `agent/auxiliary_client.py::_resolve_task_provider_model`,
+`resolve_vision_provider_client`, `_wrap_if_needed`; `agent/image_routing.py::decide_image_input_mode`;
+model pricing/modalities from `~/.hermes/models_dev_cache.json` (`opencode` entry).
+
+**Smoke test.**
+1. Resolver shape → `opencode-zen minimax-m3 OpenAI https://opencode.ai/zen/v1/`. ✅
+2. Raw wire, `curl` + base64 PNG reading `HERMES VISION OK / CODE 4712` → HTTP 200, correct
+   transcription, `"cost": "0.00014442"` for 351 prompt + 57 completion tokens. ✅
+3. Real tool path, `tools/vision_tools.py::vision_analyze_tool` on the same PNG via the hermes venv
+   → `success: True`, `analysis: "HERMES VISION OK\nCODE 4712"`. ✅
+4. Running gateway: **no restart issued or needed** — `_get_auxiliary_task_config()` calls
+   `load_config_readonly()` per call and that cache is keyed on `(path, mtime_ns, size)`, and the aux
+   client cache key includes the model. ⏳ End-to-end confirmation from the live gateway (image sent
+   in Telegram) left to the user; steps 1–3 ran in a fresh process.
+
+**Doc drift found and CORRECTED in the same session** (predates this change; `current.md` had gone
+stale against the live `config.yaml` on two lines):
+- `session_reset.mode: idle` / `idle_minutes: 1440` → **`both` / `180` / `at_hour: 4`**. Dated from
+  `config.yaml.bak-20260825-pre-session-reset` (mtime 2026-08-25 22:46, contents `idle`/1440): there
+  were *two* edits on 08-25 and the log had recorded only the first. 24 h idle never fires on a
+  thread with daily traffic, so it was a no-op; 180 min + an 04:00 sweep is the setting that works.
+- `agent.disabled_toolsets: []` → **`['computer_use']`**, disabled 2026-08-26 17:25 per
+  `config.yaml.bak-20260826-pre-computeruse`. ⚠️ **No rationale was recorded anywhere** — not in this
+  log, not in memory — so the corrected line says so explicitly rather than inventing one.
+
+**Lesson:** both drifts are the same failure as the `models.ini` double-copy — a change landed in the
+running config without the SSoT edit in the same session. The backup filenames (`bak-<date>-pre-<thing>`)
+were what made the reconstruction possible; keep that convention.
+
+---
+
+## 2026-08-26 (later) — Evening Review tick-off: dedicated automation SSH key; auth no longer depends on an inherited ssh-agent
+
+**Observed.** A tick-off checkbox in the Evening Review (Telegram thread 4) repainted to ⚠️
+instead of ☑. The ⚠️ was correct behaviour — `_GLYPH["failed"]` in `workers/tick_off.py:41`,
+written when the provider call fails, by design refusing to paint a success it had not
+achieved. `journalctl -u automated-workflows`:
+
+```
+Aug 26 21:57:28 strix-halo python3[7283]: [tick_off] token=7 ok=False
+  Couldn't tick off Plan Trichendur trip —
+  dineshmbair@dineshs-macbook-air.local: Permission denied (publickey,password,keyboard-interactive).
+```
+
+Root cause: `~/.ssh/id_ed25519` is **passphrase-encrypted** (`aes256-ctr`/`bcrypt`), and
+`apple_ssh.py::_ssh_cmd` passed `BatchMode=yes -i <key>` **without `IdentitiesOnly=yes`** — so
+ssh ignored the undecryptable file and authenticated from whatever ssh-agent the calling
+process had inherited. The tick-off listener is a **system** unit
+(`/etc/systemd/system/automated-workflows.service`) with no `SSH_AUTH_SOCK`; the Outbox
+Dispatcher runs under **user** unit `hermes-gateway.service`, which carries
+`/run/user/1000/gcr/ssh`. Same function, same key path, opposite outcomes.
+
+🔴 **This had never worked.** `night_tick`: `failed 1, open 5`, **zero `done` rows ever**. The
+2026-08-25 `complete_item` smoke test passed only because it ran in an interactive shell that
+had the agent. 🔴 And `outbox_status.py:282` reported "✅ Mac is reachable via SSH" the whole
+time — it probes from the gateway, *with* the agent, vouching for credentials the listener does
+not have. A reachability probe that runs somewhere other than the caller it certifies is not a
+probe.
+
+**Changed.**
+1. New **passphraseless** `~/.ssh/id_automation_ed25519`
+   (`SHA256:6R10yX1W54f8cgW7uFbTAICIUB/4Sy9oeazEXnNB8FY`), **appended** to the Mac's
+   `authorized_keys` (backup `authorized_keys.bak-20260826`; the personal key
+   `SHA256:m5x1KY9…` preserved), restricted `from="192.168.0.211,192.168.0.46"`.
+   `automated-workflows/.env:15` `MAC_SSH_KEY` repointed (backup `.env.bak-20260826-…`).
+2. `workers/apple_ssh.py::_ssh_cmd` — added `-o IdentitiesOnly=yes`. Landed *after* (1) was
+   proven, because it removes the agent fallback the Outbox path was silently living on.
+3. `workers/listener.py` — `apple_ssh_preflight()` at startup: logs the verdict, records it to
+   `meta.apple_ssh_preflight`, alerts Watchdog thread 5 on failure. Non-fatal by design (Action
+   Cards and routing don't need SSH).
+4. `workers/outbox_status.py` — report now names the key in use and surfaces the **listener's**
+   preflight instead of only its own agent-bearing probe. `workers/config.py` +
+   `.env` gained `TELEGRAM_WATCHDOG_THREAD_ID=5`.
+5. `tests/test_tiered_reminder_system.py` — regression guard asserting `IdentitiesOnly=yes` is
+   present as an `-o` option.
+
+**Expected.** Tick-off completes items for any caller — system unit, user unit, cron, and after
+an unattended reboot with no graphical login. Removes the latent fragility in Apple *delivery*
+too, which until now depended on gnome-keyring happening to be unlocked.
+
+**Smoke test — run under the unit's actual conditions, not from a shell.**
+- Reproducer before the fix, and the proof after:
+  `env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_automation_ed25519 …`
+  → `OK` / `dineshmbair` (old key under the same conditions: `Permission denied`).
+- Personal key still works interactively; `authorized_keys` holds **both** fingerprints.
+- Preflight under the unit's real interpreter and environment
+  (`env -u SSH_AUTH_SOCK PYTHONPATH=…/.local/lib/python3.12/site-packages /usr/bin/python3`):
+  `[startup] Apple SSH preflight OK (key=/home/dinesh-se/.ssh/id_automation_ed25519)`,
+  `meta = 2026-08-26T21:44:57…|ok|Mac is reachable`.
+- 🔴 `check_connectivity()` only runs `date` — it does **not** prove the osascript-over-stdin
+  mutation path. Verified that separately with a throwaway item, same no-agent conditions:
+  CREATE → `x-apple-reminder://2B062608-…` · COMPLETE → `completed` · DELETE → `deleted`.
+- `pytest tests/` → **957 passed**.
+
+**Follow-up.**
+1. ⏳ `sudo systemctl restart automated-workflows` still pending (needs the interactive
+   password) — the running listener is still on the old key until then. Confirm the new
+   `[startup] Apple SSH preflight OK` line appears, scoping the journal read to *after* the
+   restart, then retap token 7 and expect ⚠️ → ☑ with `night_tick.status='done'`.
+2. Changes are **uncommitted** in `~/Dev/automated-workflows` pending review.
+3. Unrelated, still open: `MAX_BUTTONS = 20` (`workers/tick_off.py:36`) and the recap's top-10
+   cap (`workers/daily_recap.py:581`) drop items with no "and N more" note.
+
+---
+
 ## 2026-08-26 — VictoriaMetrics + node-exporter + amdgpu-exporter retired
 
 **Observed:** Grafana went 2026-08-13; alerting has run entirely on llama-watchdog
@@ -3808,3 +3964,160 @@ warning (present on the 0.9.2 upgrade's first start, absent here); poller log
 confirms `reservations=[consolidation=1]` — identical to before the rename;
 `/proc/<MainPID>/environ` shows `HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS=1`;
 `/health` green; `NRestarts=0`.
+
+## 2026-08-26 20:3x — Hindsight per-op LLM routing had regressed to the cloud; fixed
+
+**Observed.** While inventorying the model-swap cutover surface for a Qwen3.8-Flash-Next
+evaluation, `/proc/<MainPID>/environ` on the running `hindsight-daemon` showed all three
+per-op model routes (`HINDSIGHT_API_{REFLECT,RETAIN,CONSOLIDATION}_LLM_MODEL`) absent —
+present only as comments in the unit file. Everything fell through to the global
+`EnvironmentFile` (`~/.hindsight/profiles/hermes.env`), whose `HINDSIGHT_API_LLM_BASE_URL`
+is `https://opencode.ai/zen/v1` — a paid cloud endpoint, not the local router. This directly
+contradicted the ✅ RESOLVED block in `current.md` claiming the 2026-08-12 fix was verified
+live. Likely cause: the same-session 0.8.4→0.9.2 upgrade and
+`_MAX_SLOTS`→`_RESERVED_SLOTS` rename (previous entry, same day) touched this exact
+`Environment=` block and dropped the three lines as a side effect.
+
+Consequence: all Hindsight memory content (reflect/retain/consolidation) was being sent to
+opencode.ai instead of the local `gemma4-e4b`. Not an OOM risk — a cloud endpoint cannot
+trigger a local heavy-model autoload, so gotcha #6 stayed closed. But
+`HINDSIGHT_API_LLM_STRICT_SCHEMA=true` (the 2026-08-12 fix for the 11.7% consolidation
+failure rate) was silently **inert** the whole time — GBNF grammar enforcement is a
+llama.cpp-only feature opencode.ai does not implement.
+
+**Changed.** `~/.config/systemd/user/hindsight-daemon.service` — restored
+`Environment=HINDSIGHT_API_{REFLECT,RETAIN,CONSOLIDATION}_LLM_MODEL=gemma4-e4b`, and
+additionally added `Environment=HINDSIGHT_API_{REFLECT,RETAIN,CONSOLIDATION}_LLM_BASE_URL=
+http://127.0.0.1:9292/v1` for all three — new this time, not a restoration. Read
+`hindsight_api/config.py` + `engine/memory_engine.py` directly to confirm: `base_url`
+resolves with the *identical* `or`-fallback chain as `model`
+(`retain_base_url = retain_llm_base_url or config.retain_llm_base_url or memory_llm_base_url`),
+so the old unit comment claiming "model only is sufficient, base_url inherits from the
+global config" was **wrong** the moment the global base_url stopped pointing at the local
+router — a model-only fix would have sent `model=gemma4-e4b` requests to opencode.ai, where
+that id doesn't exist. `*_LLM_API_KEY` was deliberately left unset per-op; it falls back to
+the global `HINDSIGHT_API_KEY=dummy_key`, which the local router does not check.
+Backup: `hindsight-daemon.service.bak-20260826-pre-model-restore`.
+`daemon-reload && restart`.
+
+**Expected.** All three roles route to the local router at `gemma4-e4b`; strict-schema
+grammar enforcement becomes live again; memory content stops leaving the box.
+
+**Smoke-test.** Verified on the running process (PID 213140), not the file:
+`/proc/213140/environ` shows all six new lines (three `_MODEL`, three `_BASE_URL`) pointing
+at `gemma4-e4b` / `http://127.0.0.1:9292/v1`; `ss -ltn` confirms `127.0.0.1:9177` LISTEN;
+`curl http://127.0.0.1:9177/health` returns `{"status":"healthy","database":"connected"}`;
+poller log shows `max_slots=3, reservations=[consolidation=1], shared_pool=2` unchanged from
+before the restart, confirming the earlier rename's behavior was not disturbed by this edit.
+
+**Follow-up (deliberately deferred).** Update `current.md`'s Hindsight section to note this
+regression explicitly (done, same session). Consider a periodic drift check (e.g. a
+watchdog assertion) that fails loudly if `HINDSIGHT_API_{REFLECT,RETAIN,CONSOLIDATION}_LLM_BASE_URL`
+ever points off-loopback — this is the second time a *_MODEL-only assumption has bitten this
+exact subsystem (2026-08-09→08-12, now 2026-08-26), and both times prose asserted a fix that
+the running process did not have.
+
+## 2026-08-26 20:5x — Fixed GRUB flags SSoT drift (4 documented, 6 actual)
+
+**Observed.** During host-upgrade recon ahead of a Qwen3.8-Flash-Next evaluation,
+`/etc/default/grub`'s `GRUB_CMDLINE_LINUX_DEFAULT` was read directly and found to carry
+**six** flags; `current.md`'s "VRAM model" line documented only four
+(`ttm.pages_limit`, `amd_iommu`, `amdgpu.dcdebugmask`, `amdgpu.lockup_timeout`). The two
+undocumented flags were `ttm.page_pool_size=32505856` and `amdgpu.gttsize=126976`.
+`amdgpu.gttsize=126976` is 124 GiB and is the actual source of the "~124 GiB usable" figure
+already quoted in this same doc line — its origin had gone unrecorded. `/proc/cmdline`
+matches `/etc/default/grub` exactly (plus a `crashkernel=` appended by
+`/etc/default/grub.d/kdump-tools.cfg`), so the running boot is correct; only the doc was stale.
+
+**Changed.** `~/Dev/strix-halo-llm-stack/docs/infra/current.md` — VRAM model line now lists
+all six flags verbatim and flags the dpkg-conffile hazard: a pending `grub2-common` package
+upgrade owns `/etc/default/grub`, and answering "install the maintainer's version" (or
+`--force-confnew`) would silently wipe all six on the next boot. No config file was touched
+— this is a documentation-only fix.
+
+**Expected.** `current.md` matches ground truth. No behavior change.
+
+**Smoke-test.** N/A (doc-only). Ground truth re-confirmed by direct read of
+`/etc/default/grub` and `/proc/cmdline` at the time of this edit.
+
+## 2026-08-26 20:5x–21:35 — Qwen3.8-Flash-Next evaluated as a DS4 replacement; REJECTED
+
+**Observed.** Qwen3.8-Flash-Next (125B MoE, 6B active, `qwen4exp` arch, GDN+QSA hybrid
+attention, +51B n-gram embedding table) was open-weighted this morning. UD-IQ4_XS quant
+(93.7 GB, 87.3 GiB) downloaded via `hf download`. A [r/StrixHalo report](https://www.reddit.com/r/StrixHalo/comments/1vz5yb3/)
+on equivalent hardware (Ryzen AI Max+ 395, 128 GB, Vulkan/RADV, same quant) measured 23.0 t/s
+decode / 390.3 t/s prefill @pp512 — +18%/+33% over our DS4 baseline (19.48/268.98 @pp2053,
+2026-08-12) — using `-c 131072 -np 1`, f16 KV, built from unmerged llama.cpp PR #27742.
+
+**Changed.** Built the PR (`035e22731a7fd70b9854b3a2d64ec68e9b1a45d3`, fetched shallow) from
+mainline llama.cpp inside the prod `kyuz0/amd-strix-halo-toolboxes` image (Vulkan userspace
+identical to prod; llama.cpp binary differs) at `~/llama-stack/eval-qwen4exp/`. Applied the
+one confirmed-necessary patch (`model.arch == LLM_ARCH_QWEN4EXP` in `graph_max_nodes()`,
+`src/llama-context.cpp`) — without it `--fit` aborts on `GGML_ASSERT(obj_new)` on a box this
+size. Two build gotchas found and fixed, both pre-existing in the base image / our own
+invocation, neither PR-specific: `/etc/alternatives/ld` is a dangling symlink in the base
+image (`collect2: cannot find 'ld'`; fixed with `-fuse-ld=bfd` or relinking it inside the
+throwaway build container); the built `llama-server` silently linked the container's
+**system** `libllama.so` (the prod fork's old libs at `/usr/lib64`) instead of our build's own,
+because we set no rpath — symptom was `unknown model architecture: 'qwen4exp'` despite a
+successful compile. Fixed with `LD_LIBRARY_PATH=/build/bin`.
+
+Ran a standalone eval container on **:10098** (never added to `models.ini`; separate image,
+separate port, prod digest pin untouched). DS4 was found already crashed/unloaded
+independently at session start (`instance name=deepseek-v4-flash exited with status 1` at
+19:40:26 UTC, no dmesg/journalctl OOM or device-lost signature, no preceding error in the
+router log — cause unresolved, flagged as a follow-up, not chased further this session) — so
+no eviction step was needed, only preventing an autoload during the window. Stopped
+`hermes-gateway.service` for the window (cron ticker lives inside it — closes both
+message-triggered and all three cron-triggered autoload paths in one action). User
+explicitly chose to proceed despite the window falling across the 21:35 evening-review cron
+(accepted: skipped for one cycle, not corrupted — confirmed by the watchdog's own
+`HEALTH unit DOWN: hermes-gateway.service` alert firing correctly at 20:54:29, itself a free
+confirmation the alerting path works).
+
+**Results** (full detail now in `current.md`'s Qwen3.8-Flash-Next section):
+- `bench-model.py`-equivalent at pp2053: **20.76 t/s decode / 274.35 t/s prefill** — confirms
+  the Reddit report's edge holds on our exact box (106.6%/102.0% of DS4 baseline).
+- At the median REAL prompt depth (**65,835 tokens**, from the 2026-08-25 38-session
+  measurement): **10.78 t/s decode — 55.4% of DS4's baseline, i.e. WORSE than DS4.** Prefill
+  173.14 t/s (64.4% of baseline). This is the decisive result — it already fails on typical
+  work, not just at the extreme p90.
+- p90 depth (119,394 tokens) attempted but not completed — client-side 600s timeout hit at
+  77% server-side progress (92,160/119,394), prefill still smoothly decaying (153 t/s @90k,
+  matching the same curve from the 65,835 run) with no plateau or recovery signal. Not chased
+  further given the median result was already decisive and the window had been open ~40 min.
+- Memory at ctx 131072: **GTT 72.36 GiB** (vs DS4's 98.4 — genuinely lighter on the GPU-memory
+  axis). But `MemAvailable` fell from 111 GiB to 14–19 GiB under load — the 51B-param n-gram
+  table is mmap'd to host RAM and prefill (not just decode) pulls meaningfully on it. **Not
+  tested at ctx 262144** (the ctx this workload actually needs) — ran out of window budget
+  after the decisive depth result made further memory characterization moot for a go/no-go.
+- `-np 2`: did not crash in limited testing (explicit dual-slot concurrent requests; 4
+  sequential auto-routed requests, all landed on the same slot via LCP similarity so the
+  specific LRU-handoff scenario the PR thread describes was not forced). Reported as
+  unreproduced, not fixed — the PR's own thread still lists it as an open issue.
+
+**Teardown, verified on the running process, not the file:**
+- `docker rm -f` the eval container; GTT returned to **7.42 GiB** (pre-eval baseline), host
+  `MemAvailable` back to 111 GiB.
+- `swap-model.sh ds4` reloaded DS4; confirmed via router `/models` (`deepseek-v4-flash loaded,
+  gemma4-e4b loaded, qwen3.8-27b-q4 unloaded`) — matches documented steady state.
+- `systemctl --user start hermes-gateway`; confirmed `active`, PID matches `hermes status`
+  output (`Gateway Service: ✓ running`), Telegram connected (single "Connecting… attempt 1/8"
+  with no retry loop), WhatsApp bridge back on :3000, 9 cron jobs still registered.
+- Watchdog's own log confirms the full cycle cleanly: `HEALTH unit DOWN: hermes-gateway.service`
+  at 20:54:29, then `HEALTH reclaim 34.3x ignored — a model is loading (expected, not a sick
+  host)` at 21:27:30 during the DS4 reload — the 2026-08-25 reclaim-suppression-during-load
+  guard fired correctly under real conditions for the first time since it was written.
+
+**Expected.** DS4 remains the daily driver. `models.ini` and all other config untouched — this
+was purely an eval, no cutover surface (Phase 4 of the plan) was touched.
+
+**Follow-up (deliberately deferred).**
+1. Root-cause the independent DS4 crash at 19:40:26 UTC if it recurs — no signature found this
+   time (not OOM, not device-lost), and it predates any of this session's eval activity, so it
+   is unrelated to Flash-Next but still an open question about the daily driver's stability.
+2. Re-check Flash-Next only if MTP lands (confirmed WIP, not available in this PR) — it's the
+   most likely lever given `qwen3.8-27b-q4` gained ~2.5x decode from MTP tuning alone, and
+   nothing else measured here suggests a path to competitive real-depth numbers.
+3. `~/llama-stack/eval-qwen4exp/` (build + weights, ~88 GB) kept on disk for reference; disk
+   has 802 GB free, not urgent to reclaim.

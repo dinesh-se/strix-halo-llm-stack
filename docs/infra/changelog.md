@@ -26,6 +26,120 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-28 — Epa Q executor was silently on cloud Zen (§8/§9.2 violation); pinned local + two related fixes
+
+**Observed.** Chasing "what's holding up system memory" (Epa Q paused). Three findings in
+`~/Dev/automated-workflows/workers/epaq/`:
+1. **Executor ran on cloud, not local.** `_HermesSubprocessSession.start()` set
+   `LLM_BASE_URL`/`LLM_MODEL` env vars to pin local DS4, but `hermes chat` resolves its
+   provider from `~/.hermes/config.yaml` (`model.provider: opencode-zen` — cloud — since
+   2026-08-27), so the env vars were inert. `~/.hermes/logs/agent.log` for the `ntc-023`
+   run: `provider=opencode-zen base_url=https://opencode.ai/zen/v1`, **55 API calls**, and
+   an `apps/api/.env` dump (`DATABASE_URL`/`DIRECT_URL` for the live Supabase project) went
+   in the payload. Task #13 (Gmail helper, 2026-08-27) likewise. `REQUIREMENTS.md` §8 pins
+   the executor session to local `custom:local-models`; §9.2 requires it. Code contradicted
+   the spec from Epa Q go-live until this fix.
+2. **Orphaned dev servers.** `hermes chat` spawned without `start_new_session=True`; a
+   `pnpm dev` the agent started reparented to `systemd --user` on each checkpoint-pause and
+   leaked (~1.5 GiB per orphan; `ntc-023` pause-looped 3× on 2026-08-28).
+3. **Supervisor pressure probe false-held the task.** `_default_pressure()` used
+   `MemAvailable/MemTotal` with a 4 % `critical` floor; ~110 GiB of "used" RAM here is GTT
+   held by the resident models (unswappable, stable by design), so the ratio sits ~3–10 %
+   at steady state → false `critical` → `system-hold` at 3.83 %.
+
+**Changed.**
+- `workers/epaq/executor.py` — `_HermesSubprocessSession`: added `LOCAL_PROVIDER =
+  "custom:local-models"` / `LOCAL_MODEL = "deepseek-v4-flash"`; `start()` now passes
+  `--provider custom:local-models -m deepseek-v4-flash` as CLI flags (the real pin; env
+  vars kept as belt-and-suspenders). Also `start_new_session=True` + new `_signal_group()`
+  → `terminate()`/`kill()` SIGTERM/SIGKILL the whole process group (fallback to lone PID).
+  Module + class docstrings corrected.
+- `workers/epaq/supervisor.py` — `_default_pressure()`: `critical` floor 4 % → 2.5 %,
+  `warn` 10 % → 5 %; mid-band only escalates to `critical` when new `_psi_mem_full_avg60()`
+  (`/proc/pressure/memory` `full avg60`) > 5. Threshold rationale in a module comment.
+- `tests/test_epaq_executor.py` — `test_hermes_session_pins_local_provider` (argv),
+  `test_kill_reaps_the_whole_process_group` + `_terminate_` + `_signal_group_on_dead_proc_`
+  (pipe-EOF, race/PID-reuse-proof). `test_epaq_supervisor.py` unchanged (injects the probe).
+- Docs: `epa_q/BUILD_LOG.md` entry; `current.md` Epa Q section + DS4 table row + Alerting
+  rows. No `REQUIREMENTS.md` change — the spec was already right.
+- **Not done by decision:** no Supabase credential rotation ("what's gone as gone").
+- **Not touched:** `~/.hermes/config.yaml` `model.provider: opencode-zen` stays — that is
+  the *orchestrator brain* (interactive Hermes, briefings, crons). Only the Epa Q per-task
+  worker is forced local.
+
+**Expected.** Epa Q per-task work runs on the resident local DS4 (`:9292`) — private, zero
+cloud cost, prompt-cache-resident. Dev servers the task starts die with it on pause/stop.
+The supervisor stops false-pausing at the box's normal ~3–6 % `MemAvailable` steady state.
+
+**Refs.** `~/Dev/automated-workflows/epa_q/REQUIREMENTS.md` §8, §9.2; `epa_q/BUILD_LOG.md`
+2026-08-28 entry.
+
+**Smoke test.**
+- Ran `_HermesSubprocessSession("Reply with exactly: PONG").start()` directly (the real
+  executor code path); `agent.log` showed `provider=custom
+  base_url=http://127.0.0.1:9292/v1 model=deepseek-v4-flash`, returned `PONG`. Cloud
+  endpoint not touched.
+- `_default_pressure()` live → `warn` then `ok` as MemAvailable recovered 3.8 % → 5.3 %
+  after killing the leaked `ntc-023` dev tree; `ntc-023` completed on the next dispatch tick
+  (no further system-hold).
+- `pytest tests/ -k epaq` → **215 passed**. Both modules re-import per `*/15` / `*/10` cron
+  tick — no restart needed.
+
+## 2026-08-28 — Hindsight 0.9.2 consolidation backlog re-check: drained 3,644 → 0 (fix confirmed)
+
+**Observed.** Scheduled 1–2 day re-check (Apple Reminder) of the consolidation backlog
+recorded at the 2026-08-26 0.8.4 → 0.9.2 upgrade. Baseline that day: `pending_consolidation`
+3,644 / bank fact_count 8,965 (**40.6%**), `failed_consolidation` (perm) 4. Verdict rule was:
+falling = the 0.9.2 partial-batch-retry fix + `LLM_STRICT_SCHEMA=true` worked; flat =
+concurrency-bound.
+
+Live from `:9177` `/v1/default/banks/hermes/stats` + `/llm-requests`:
+- `pending_consolidation` **0** (was 3,644); `pending_operations` **0**; backlog **0%**.
+- `failed_consolidation` **4** — flat, no new permanent failures.
+- Consolidation LLM calls in the last ~22 h of trace: **92, all `success`, 0 validation
+  errors**, all on `openai/gemma4-e4b` (local `:9292`). `last_consolidated_at` 2026-08-28
+  07:11 — actively draining, keeping pace with ingestion (bank fact_count 8,965 → 10,028,
+  +1,063 normal growth).
+- `failed_operations` total 228 = 226 from July + 2 from the 2026-08-01 outage; **none since
+  2026-08-01**.
+- Worker poller: `max_slots=3, reservations=[consolidation=1], shared_pool=2` — the
+  "retain never runs" landmine (shared_pool must be > 0) is clear.
+- No real HTTP 429s, no `queue building up`, no retry amplification (`attempt=N/4`) since the
+  upgrade. The ~12 `[CONSOLIDATION] … LLM emitted N duplicate update(s) targeting the same
+  observation_id … after dedup` lines are the **new 0.9.x graceful dedup path**, resolved
+  in-line — not the old hard `pydantic ValidationError: _ConsolidationBatchResponse` that
+  used to eat whole batches.
+
+**Changed.** No infra change — verification only. Documentation updates in the same session:
+`hindsight_strict_schema_2026_08_12` memory (re-check result recorded; "not yet re-checked"
+and "not yet proven: a real consolidation batch through Hindsight" caveats cleared — 92/92
+clean covers both) and `local_ai_memory_stack` memory (was stale: still described all
+Hindsight LLM calls routing local via `extractor`/`memory-writer` aliases; corrected to
+note the global/fallback member is `deepseek-v4-flash` on `https://opencode.ai/zen/v1`
+since ~08-06, with only retain/reflect/consolidation pinned local to `gemma4-e4b`).
+
+**Expected.** Confirms the 2026-08-26 upgrade + the same-day 20:35 per-op routing repair
+(the three `*_LLM_MODEL` lines the upgrade had silently dropped to comments, which had left
+`LLM_STRICT_SCHEMA=true` inert against the cloud endpoint). Consolidation is no longer a
+standing backlog; concurrency knobs (`WORKER_CONSOLIDATION_RESERVED_SLOTS=1`,
+`CONSOLIDATION_LLM_PARALLELISM=2`) were not the bottleneck and need no change.
+
+**Refs.** Hindsight 0.9.1/0.9.2 release notes (partial-batch-failure retry, per-bank claim
+serialization, pending-stat cleanup of permanently-failed memories). Memories:
+`hindsight_strict_schema_2026_08_12`, `local_ai_memory_stack`,
+`hindsight_retain_fanout_2026_08_04`. Prior entries: 2026-08-26 09:1x / 09:3x / 20:35.
+
+**Smoke test.** `curl :9177/health` → `healthy`, `db connected`. `/version` → `api_version
+0.9.2`. `/v1/default/banks/hermes/stats` → `pending_consolidation=0`,
+`failed_consolidation=4`, `pending_operations=0`. `/llm-requests?operation=consolidation&limit=200`
+→ 92 rows, `status` all `success`, window 2026-08-27T08:59 → 2026-08-28T07:11.
+`/proc/<MainPID>/environ` confirms `HINDSIGHT_API_{RETAIN,REFLECT,CONSOLIDATION}_LLM_MODEL=gemma4-e4b`
++ matching `_LLM_BASE_URL=http://127.0.0.1:9292/v1`, `HINDSIGHT_API_LLM_STRICT_SCHEMA=true`.
+`journalctl --user -u hindsight-daemon` since 2026-08-26: worker startup line
+`shared_pool=2`, zero `ValidationError`/`queue building`/real 429.
+
+---
+
 ## 2026-08-27 (later) — Epa Q goes live: a proactive task queue replaces the overnight cycle; new DS4 consumer + advisory lease + supervisor RAM back-off
 
 **Observed.** The overnight batch cycle (`overnight-tasks` cron, 23:00) was a per-task-file

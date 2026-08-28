@@ -157,6 +157,7 @@ re-test; the depth curve is the whole story here.
 - ⚠️ **A running Hermes session keeps its pinned model in session state** — config changes do not move it retroactively. Start a new session (or switch in-session) to pick up a `model.default` change. This is what left the user on the slow Q8_0 on 08-19.
 - **Cron model pins (both on `deepseek-v4-flash` as of 2026-08-20):** `morning-check-in` `827131b2c8b5` (07:30), `night-check-in` `5d37a9e1e859` (21:35). Every other job runs `model: null` and therefore resolves to `model.default`. 🔴 **These pins are the load-bearing guard for gotcha #6** — an unattended job naming an unloaded ~98 GiB model is the OOM path. Re-check them after ANY model swap.
 - **Epa Q crons (2026-08-27):** `epaq-dispatch` `0fd2c2ecdaed` (*/15), `epaq-supervise` `b97ea1e859c6` (*/10). Both are `--no-agent --script` (`~/.hermes/scripts/run_epaq_{dispatch,supervise}.sh`), so **the cron tick itself makes no model call** — the DS4 consumer is the *executor* that `epaq-dispatch` spawns, and it is pinned to the RESIDENT DS4, so gotcha #6 stays closed. The `.sh` wrappers redirect to their own logs, so `hermes cron --no-agent` sees empty stdout and stays silent each tick.
+- 🔴 **`cron.script_timeout_seconds: 21600` (2026-08-28)** — was the **3600 s default**, and `cron/scheduler.py::_run_job_script` applies it to `--no-agent --script` jobs too, then `killpg(SIGTERM)` → `killpg(SIGKILL)`. `epaq-dispatch` runs the Epa Q task *inside* the tick, so **every task was one hour from a silent death**: SIGTERM skips Python's `finally`, so the task stayed `running` and the `ds4_lease` leaked, and both epaq jobs are `deliver: "local"` so no alert went anywhere. Resolution order is env → `config.yaml` → default, and `load_config()` caches on the file's mtime+size, so **no gateway restart is needed** — but verify with `_get_script_timeout()`, not by reading the file. Backup `config.yaml.bak-20260828-pre-script-timeout`.
 - Aux roles (compression, title_generation, curator, background_review, delegation) → **gemma4-e4b** at :9292
 - 🔴 **`auxiliary.vision` is the ONE aux role not on local hardware (2026-08-27):** `provider: opencode-zen`, `model: minimax-m3` — a **paid** OpenCode Zen model ($0.30 in / $1.20 out per M; a 350-token OCR call measured `"cost": "0.00014442"`). It exists because `deepseek-v4-flash` is text-only, so `decide_image_input_mode()` returns `"text"` and every image is routed to this aux client. 🔴 **OpenCode Zen serves different models on different API surfaces** and the transport is picked from `auxiliary.<task>.api_mode`: `gpt-*`/`grok-*` → `/v1/responses`, `claude-*`/`qwen*` → `/v1/messages` (base_url loses its `/v1`), everything else → `/v1/chat/completions` (`hermes_cli/models.py::opencode_model_api_mode`). 🔴 **The `hermes model` → "Configure auxiliary models…" picker never writes `api_mode`** — `hermes_cli/main.py::_save_aux_choice` writes exactly `provider`/`model`/`base_url`/`api_key` — so picking a `gpt-*`/`claude-*`/`qwen*` Zen model there yields a plain `OpenAI` client aimed at the WRONG endpoint, with no config error. **Therefore: only ever put a natively `chat_completions` Zen model in this slot.** ⚠️ `gemini-3.5-flash-lite` was the first choice and is the better OCR model, but **every `gemini-*` slug on Zen was returning HTTP 500 on 2026-08-27** (3 retries × 3 slugs; `minimax-m3`/`kimi-k2.5` fine on the same key) — recheck and switch back when Zen's Gemini upstream recovers.
 - **PDFs never touch the vision model.** `tools/read_extract.py` shells out to poppler `pdftotext` and feeds plain text to the main model (DS4); `tools/vision_tools.py` normalizes every input to jpeg/png/gif/webp and has **no pdf branch**, so a Zen model's `pdf` modality flag is unreachable here and is NOT a selection criterion. ⚠️ Gap: a **scanned** PDF yields empty pages (warning footer appended) and does NOT fall back to OCR via the vision model.
@@ -206,12 +207,39 @@ Design + operations trail: `~/Dev/automated-workflows/epa_q/` (`REQUIREMENTS.md`
   at `## Host` — see `## Alerting`.
 - **Crons:** `epaq-dispatch` (*/15), `epaq-supervise` (*/10) — `--no-agent --script`,
   negligible cost (see the Cron pins bullet above).
+- 🔴 **The supervisor no longer touches a task (2026-08-28).** It used to nudge /
+  block / system-hold, each of which requeued a **running** task; the executor
+  then dropped the run without checkpointing. Cost on day one: task #2 3
+  attempts (79 min for ~13 min of work), task #14 5 attempts (92 min for ~17
+  min) — every restart a full cold re-prefill on DS4. The decisive case was a
+  nudge at **19 s** of silence on `loop=6`, because the loop heuristic was ORed
+  past the silence check. Now observe-and-alert only; loop threshold 4 → 12; one
+  transcript per attempt (they used to append, so earlier attempts' lines
+  inflated the loop count). **The only thing that ends a task is the executor's
+  own 30-min inactivity watchdog** — the overnight cycle's failure model, which
+  ran for months without trouble. `Dispatcher._reap` covers the one case it
+  cannot see: a runner SIGKILLed without its `finally` (2 h without progress →
+  retryable failure + lease released, with a Telegram line).
+- 🔴 **The briefings no longer interrupt a running task.** `ds4_lease` takes the
+  slot if free and proceeds either way; holding it only stops the next tick
+  *starting* a task. A task already running overlaps the briefing on DS4 for its
+  few minutes — the pre-Epa-Q behaviour, and better than discarding an hour of
+  work. The old `lease_request_pause` / checkpoint hand-off is deleted (nothing
+  expired the flag, so a requester dying before its `finally` made every
+  subsequent task start immediately requeue).
+- **Executor fails closed on the provider pin.** `_assert_local_provider()` reads
+  `~/.hermes/config.yaml` and aborts before `Popen` unless `custom:local-models`
+  resolves to loopback — the 2026-08-28 cloud-leak path can no longer reopen
+  silently, and a test asserts it against the live config.
 - 🔴 **The old `overnight-tasks` 23:00 cron (`overnight_tasks.py` → `overnight_swap.py` →
   `swap-model.sh`) and its deliberate no-swap-back design were RETIRED 2026-08-27** — the
   cron is paused, the one pending task was migrated. `gpu-price-watch` (a real DS4 agent
   turn, Sat 06:00) is now an Epa Q recurring schedule; its old cron is paused too. The
   `Evolve Email Classifier` and `remote job digest` crons are `--no-agent` scripts that
-  make no model call and were left alone.
+  make no model call and were left alone. **`overnight-archive` `96390dc20105` paused
+  2026-08-28** after `~/night-cycle-tasks/completed/` was drained into `archive/2026-08/`;
+  nothing schedules the `overnight_*.py` cluster now (kept only for the RUNBOOK's rollback
+  window — delete from ~2026-09-10).
 
 ## pi
 

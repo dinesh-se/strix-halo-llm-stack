@@ -26,6 +26,70 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-28 (later) — Epa Q supervision layer removed; cron script timeout raised 3600s -> 21600s
+
+**Observed:** Epa Q's first full day of real use. Every task was repeatedly
+interrupted and restarted by the supervision layer, not by anything on the
+serving side: task #2 took 3 attempts (79 min wall clock for ~13 min of work),
+task #14 took 5 (92 min for ~17 min). Each restart is a fresh `hermes chat`
+session on DS4 — i.e. a full cold re-prefill of a large coding prompt, which is
+the documented "everything's slow" amplifier. The decisive line, `#14` at
+13:10:30Z in `~/night-cycle-tasks/epaq_supervise.log`:
+
+```
+epaq supervisor: task 14 -> nudge (silence=19s loop=6 ds4err=0 health=True pressure=ok)
+```
+
+19 s since last output — actively streaming — requeued purely because the
+transcript tail held six identical lines. `Supervisor._judge` ORed the loop
+check past the silence check, so the raised silence thresholds (live since
+12:26Z that day) could not prevent it. Separately, reading
+`hermes-agent/cron/scheduler.py` showed `_run_job_script` applies
+`cron.script_timeout_seconds` (default **3600**) to `--no-agent --script` jobs
+and then `killpg(SIGTERM)` -> `killpg(SIGKILL)`. `epaq-dispatch` runs the Epa Q
+task *inside* that tick, so any task over 60 min would have been killed
+mid-flight — and because both epaq jobs are `deliver: "local"`, silently,
+leaving the task `running` and the `ds4_lease` leaked (Python skips `finally`
+on SIGTERM).
+
+**Changed:**
+- `~/.hermes/config.yaml` — added `cron.script_timeout_seconds: 21600` (6h).
+  Backup `config.yaml.bak-20260828-pre-script-timeout`. Deliberately a config
+  line, not a detached-runner rewrite: the retired `overnight-tasks` cron ran
+  under the identical cap for months without trouble.
+- `~/Dev/automated-workflows` — `workers/epaq/supervisor.py` now observes and
+  alerts only; no branch mutates task state (ladder `heartbeat`/`warn`/`alert`,
+  loop threshold 4 -> 12). Deleted the lease pause/checkpoint hand-off
+  (`lease_request_pause`, `_handle_pause`, `pause_for_handoff`, the
+  `pause_requested*` columns) and the `agent.log` progress signal. Added
+  `_assert_local_provider()` (fail closed unless `custom:local-models` resolves
+  to loopback) and `Dispatcher._reap` (recover a task/lease from a runner killed
+  without its `finally`). Commits `1114e1b`, `f9a88d2`, `36b0b79`, `b33bb34`,
+  `879dee3`.
+- `hermes cron pause 96390dc20105` (`overnight-archive`) after draining
+  `~/night-cycle-tasks/completed/` into `archive/2026-08/`.
+
+**Expected:** a queued task runs start-to-finish the way an overnight task used
+to — one attempt, no cold re-prefills from requeues — and DS4 stops paying for
+restarts of healthy work. A briefing at 07:00/21:35 now simply overlaps a
+running task for its few minutes instead of discarding it (the pre-Epa-Q
+behaviour). Nothing about the serving layer changes: DS4 stays `--parallel 4`,
+still one heavy consumer at a time by queue construction.
+
+**Refs:** `hermes-agent/cron/scheduler.py:3662,4012,4117` (script timeout +
+killpg); `epa_q/BUILD_LOG.md` 2026-08-28 entry; `epa_q/REQUIREMENTS.md` §5,
+§10.6, §11, §12.
+
+**Smoke test:** `_get_script_timeout()` re-resolved through hermes' own function
+-> `21600` (config cache keys on the file's mtime+size, so the running gateway
+picks it up with no restart). Full `tests/` suite **1239 green**. Live control
+run: `epaq-supervise` paused, task #15 (`home-trolley S1`, coding) claimed at
+13:45:31Z and ran **one attempt with zero pauses** past the 26-minute mark —
+against #14's 5 attempts for comparable work. New test
+`test_the_real_config_pins_the_executor_to_loopback` asserts the *live*
+`~/.hermes/config.yaml` keeps the executor on 127.0.0.1, so a future edit that
+would re-open the cloud-leak path turns the suite red.
+
 ## 2026-08-28 — Epa Q executor was silently on cloud Zen (§8/§9.2 violation); pinned local + two related fixes
 
 **Observed.** Chasing "what's holding up system memory" (Epa Q paused). Three findings in

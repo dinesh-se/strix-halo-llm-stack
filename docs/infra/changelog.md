@@ -26,6 +26,49 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-29 — ds4fa engine REJECTED; Q2-vs-Q3 quant question SETTLED with measurements. No production change.
+
+**Observed:** User read that DeepSeek-V4-Flash runs better at a Q2 quant than the UD-IQ3_XXS we serve, and directed a full engine evaluation of `julianmb/ds4fa` (a fork of `antirez/ds4`, NOT llama.cpp) advertising **32 tok/s decode**. Prod was taken down for the window (user ran `systemctl --user stop llama-watchdog llama-router` at 06:34; the watchdog MUST be stopped, not just the router — `watchdog.py` probes with real inference and deliberately relies on router autoload, so an eviction alone produces a flap, not a free box).
+
+**Changed:** **NOTHING in production.** `models.ini`, `llama-router.service`, and all consumer configs are byte-identical to this morning. All evaluation ran in standalone containers on side ports (:10099 / :10098) or as one-shot `llama-perplexity` jobs. Six crons were paused for the window and all six resumed (`epaq-dispatch`, `epaq-supervise`, `morning-brief`, `outbox-dispatcher`, `Evolve Email Classifier`, `remote job digest`).
+
+**Expected:** A go/no-go on changing engine and/or quant. Outcome: **stay exactly where we are.**
+
+**Refs:** Full working ledger `~/llama-stack/eval-ds4fa/LEDGER.md`; benches in `~/llama-stack/eval-ds4fa/bench/`; ds4fa `src/ds4.c:2022`, `AGENTS.md:28`.
+
+### 🔴 ds4fa REJECTED — both arms failed, for different reasons
+- **B2 (antirez q2 80.76 GiB + MTP 3.55 GiB), MEASURED and LOSES.** At depth 60,566: **82.67 t/s prefill / 12.51 t/s decode** vs our llama.cpp DS4 at 65,835 (**155.50 / 14.39**). **1.88x slower prefill, 13% slower decode.** MTP contributed nothing measurable at temp 0 (greedy) where antirez says it should apply.
+- **B4 (ROCmFPX + DSpark) CANNOT RUN — the fast path is NOT IN THE PUBLIC REPO.** Server aborts with `unsupported GGUF type 101 / 104 / 107`. The GGUF type table at `src/ds4.c:2022` ends at `[100] = iq2_m`; ROCmFP2/3/4 are absent, and there is no ROCmFPX code anywhere in `src/` (`.c`/`.h`/`.cu`/`.cuh` all checked; single branch, HEAD `797a35f`). `AGENTS.md:28` points at a private `halofpx-research` workshop repo. **The entire 32 tok/s claim is unverifiable and unusable**, while `download_model.sh rocmfpx-strix` happily fetches a 102 GB model the shipped code cannot read.
+- 🟢 **One real architectural finding:** ds4's prefill is **FLAT with depth** (88.49 -> 82.67, −6% over a 9x depth increase) where llama.cpp's **degrades −42%** (268.98 -> 155.50). Structurally better, but it starts ~3x lower so the curves never cross inside our context range.
+- ✅ ROCm 7.2.4 works on gfx1151 (`rocm_smoke` PASSED); the 2026-08-04 ROCm hang did not reproduce. Build image `ds4fa-build:rocm7.2.4` kept. ⚠️ `pageable-access=0` is a driver/KFD property, NOT tunable — kernel 7.0.0-30 is well past their 6.18.4 threshold and it still reports 0.
+
+### 🟢 NEW BASELINE — DS4 at REAL depth (we only ever had pp2053 numbers)
+| depth | prefill t/s | decode t/s |
+|---|---|---|
+| 2,053 (prior) | 268.98 | 19.48 |
+| **65,835 (measured)** | **155.50** | **14.39** |
+
+**Decode −26.1%, prefill −42.2% from 2k to 66k.** 🔴 **Every past comparison against "19.48" was against a shallow number** — including the 26.33 t/s dspark figure, which is also depth-0 and must not be compared to depth-adjusted projections. Matches the family curve (GB10 −23.3%, M5 Max −29.8% over the same span).
+
+### 🔴 Q2 vs Q3 — the 2026-08-06 NULL RESULT is now CLOSED
+`llama-perplexity`, 200 chunks, `-c 512`, production flags (`-fa on`, `--cache-type-k/v q8_0`), identical corpus per arm. Absolute values are NOT comparable to published figures; only deltas matter.
+
+| quant | size | prose PPL | vs IQ3 | code PPL | vs IQ3 |
+|---|---|---|---|---|---|
+| **UD-IQ3_XXS** (prod) | 97.05 GiB | 6.0873 | — | 1.8378 | — |
+| **UD-IQ2_XXS** | 84.62 GiB | 6.9820 | **+14.70%** | 1.9024 | **+3.52%** |
+| UD-IQ2_M | 84.68 GiB | not run | — | 1.9055 | +3.68% |
+
+🔴 **The damage is concentrated in PROSE, not code.** A wikitext-only verdict (+14.7%) would have discarded 12.43 GiB of relief for a cost that largely does not apply to a coding workload. The code corpus was 2 MB of the user's own TS/TSX/Python from `~/Dev` (stays local). **Lesson: choose the eval corpus to match the workload BEFORE running.** ⚠️ "Mostly coding" describes intent, not the model's token mix — agentic turns emit reasoning, tool arguments and planning, which behave like prose, so effective cost sits between 3.52% and 14.70%.
+
+🔴 **UD-IQ2_M IS THE SAME QUANT AS UD-IQ2_XXS.** Across 1,328 tensors exactly ONE differs (q4_k -> q5_k); that is the entire 66 MB gap. Confirmed empirically: +0.16%, 0.15 sigma. **Do not re-download it expecting a middle rung — there isn't one.** Next real step up is UD-IQ3_S at 108.1 GiB, larger than prod. The recipe: only **84 tensors** at `iq2_xxs` (the huge routed-expert matrices), 318 at `q8_0`, 41 at `iq3_xxs` — the asymmetric scheme antirez describes, and why code survives at 2 bpw.
+
+**Smoke test:** Restored and VERIFIED on the running system: `deepseek-v4-flash loaded`, `gemma4-e4b loaded`, `qwen3.8-27b-q4 unloaded` (correct per `load-on-startup` policy); `llama_watchdog_models_loaded 2`, `device_lost_total 0`; GTT 109 GiB, MemAvailable 9.6 GiB (normal). **Hindsight: 66 `APIConnectionError` during the 3.5 h outage, 0 since restore**, worker polling 0/3 slots. All six crons resumed with correct next-run times. ⚠️ Watchdog `probe_success` had not yet emitted a VALUE at check time — only HELP/TYPE — so alerting is not confirmed until a `probe_latency_seconds` sample lands (`PROBE_GRACE_SECONDS=300` false-passes).
+
+**Open / not done:** (a) **IQ2_XXS throughput at depth is UNMEASURED** — there is no IQ2 counterpart to A0's 155.50/14.39, and perplexity says nothing about 66k behaviour. Required before any deploy. (b) A deploy is **not** a sibling-directory edit: IQ2_XXS lives in `hf-cache-archive` under snapshot `57326b94…` while prod IQ3 is in `hf-cache` under `1290dcca…` — different mount AND snapshot, so `llama-router.service` bind-mounts change too. (c) ~113 GB of dead ds4fa downloads (ROCmFPX 95.29 GiB + DSpark drafter 10.53 GiB) are unusable without the private kernels and can be deleted; UD-IQ2_M (84.68 GiB) is redundant with UD-IQ2_XXS.
+
+---
+
 ## 2026-08-28 (later) — Epa Q supervision layer removed; cron script timeout raised 3600s -> 21600s
 
 **Observed:** Epa Q's first full day of real use. Every task was repeatedly

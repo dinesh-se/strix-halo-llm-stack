@@ -1,6 +1,30 @@
 # AI Infra — Current State
 
-> **Last verified:** 2026-08-27 (later) — **Epa Q** (proactive task queue in
+> **Last verified:** 2026-08-30 (later) — **`Qwen3.8-Flash-Next` (`qwen4exp`) eval
+> artifacts removed.** It was never integrated (standalone :10098 eval container,
+> never touched `models.ini`, REJECTED 2026-08-26 — decode at real workload depth
+> worse than DS4), so this was pure cleanup: deleted the 88 GiB GGUF
+> (`~/llama-stack/hf-cache/hub/models--unsloth--Qwen3.8-Flash-Next-GGUF/`) and the
+> 671 MiB custom-built `llama.cpp-qwen4exp` eval binary
+> (`~/llama-stack/eval-qwen4exp/`), and removed the now-redundant `### Qwen3.8-Flash-Next`
+> deep-dive section from this file (the full evaluation write-up already lives in
+> the 2026-08-26 changelog entry — nothing was lost, only de-duplicated). No
+> config, no router, nothing live was touched.
+> Prior: 2026-08-30 — **`qwen3.8-27b-q4` fully decommissioned.** It was the
+> last on-demand swap-target model (evaluated 2026-08-19, rejected as a daily driver,
+> kept on-demand only); it has had zero real use since. Removed: the `models.ini`
+> section (both copies) + its GGUF (17.56 GiB), the `/models/qwen38` bind-mount in
+> `llama-router.service`, `HEAVY_MODELS` in `watchdog.env` and `HEAVY_OTHERS` in
+> `swap-model.sh` (kept in lockstep as required), the `qwen3.8-27b-q4: {}` entry from
+> BOTH `~/.hermes/config.yaml` `custom_providers` entries, and the two now-dead
+> `bench-qwen38.sh` / `end-qwen-trial.sh` scripts. `swap-model.sh`'s general
+> ds4<->X mechanism was deliberately kept (not retired) for a possible future
+> on-demand model — see the changelog for the full edit list. **No on-demand
+> alternative model currently exists**; DS4 + gemma4-e4b remain the only two
+> models, both always resident. Serving layer otherwise unchanged — router
+> restarted once (required, models.ini is parsed only at startup), both models
+> confirmed reloaded clean.
+> Prior: 2026-08-27 (later) — **Epa Q** (proactive task queue in
 > `~/Dev/automated-workflows`) went live: a new DS4 consumer (the *executor*), an
 > advisory `ds4_lease` for turn-taking on the single resident model, and a *supervisor*
 > that pauses the executor on `/health` failure or critical host-RAM. The `overnight-tasks`
@@ -9,9 +33,10 @@
 > `### Epa Q` subsection under Hermes, and the changelog.
 > Prior: 2026-08-26 21:35 — Qwen3.8-Flash-Next evaluated (standalone :10098 eval
 > container, never touched `models.ini`) and REJECTED as a DS4 replacement — decode at real
-> workload depth is WORSE than DS4, not just blocked by upstream issues (see changelog + the
-> Qwen3.8-Flash-Next section below). Hindsight per-op LLM routing regressed to a cloud
-> endpoint and was fixed same session (see Hermes section). GRUB flags SSoT drift fixed.
+> workload depth is WORSE than DS4, not just blocked by upstream issues (full write-up in the
+> 2026-08-26 changelog entry; its eval artifacts were removed 2026-08-30, see above). Hindsight
+> per-op LLM routing regressed to a cloud endpoint and was fixed same session (see Hermes
+> section). GRUB flags SSoT drift fixed.
 > Prior: 2026-08-26 09:0x — VictoriaMetrics + node-exporter + amdgpu-exporter retired (see changelog).
 > Prior: 2026-08-25 — host RAM pressure work (Firecrawl socket-activated, sysctl tuned; see changelog).
 > Model/router state (DS4 + gemma resident, qwen3.8-27b-q4 on-demand) is UNCHANGED and was
@@ -45,7 +70,7 @@ The "+5.81 GiB drift" is exactly this KV + compute-buffer overhead, chained from
 ## Router / serving
 
 - **Service:** `llama-router.service` (systemd user unit) — llama.cpp's **native router server** on **:9292**. llama-swap is **retired** (config moved to `models.ini`).
-- **Unit:** `~/.config/systemd/user/llama-router.service` — docker `llama-router` container, image `kyuz0/amd-strix-halo-toolboxes@sha256:ca4c4c…a0211`, `--oom-score-adj=1000`, `--models-preset /models.ini --models-max 3`, `--network host`, bind-mounts the model repos (`/models/ds4`, `/models/aux`, `/models/qwen38`) + `LLAMA_CACHE=/models/empty` (mitigates unconfigurable model auto-discovery — see gotchas).
+- **Unit:** `~/.config/systemd/user/llama-router.service` — docker `llama-router` container, image `kyuz0/amd-strix-halo-toolboxes@sha256:ca4c4c…a0211`, `--oom-score-adj=1000`, `--models-preset /models.ini --models-max 3`, `--network host`, bind-mounts the model repos (`/models/ds4`, `/models/aux`) + `LLAMA_CACHE=/models/empty` (mitigates unconfigurable model auto-discovery — see gotchas).
 - 🔴 **The router image IS Nathan's fork build** — `kyuz0/amd-strix-halo-toolboxes` tracks `Nathanw1014/llama.cpp:strix-halo-vulkan` (the hand-tuned DS4 Vulkan MoE kernels / `GGML_VK_MMID_F16B` path). Pinned **by digest** (`ca4c4c…a0211`, built 2026-08-04) because the `:vulkan-radv-performance` tag is mutable and gets rebuilt. **Version string `10283 (b7b85da9c)` is a FORK counter, NOT comparable to mainline llama.cpp** — don't read it as "stock Vulkan", and don't propose a switch to Nathan's fork as a change (we are already on it). At this point in time it is the efficient/robust/performant build; re-evaluate only against a genuinely newer/better build. Ground truth = the unit file's digest-pin comment block, lines 83–93.
 - **Config file:** `~/llama-stack/config/models.ini` — **RUNTIME copy, bind-mounted to `/models.ini`; this is the one the router actually reads.** Keys are llama-server long options minus `--`; `[*]` is shared defaults; section name IS the model id clients request; router OVERWRITES `--alias` with the section name.
 - ⚠️ **There are TWO copies** (they drifted once, found 2026-08-10). `~/Dev/strix-halo-llm-stack/config/models.ini` is the versioned template; the runtime copy above is live. ✅ **Reconciled 2026-08-19 — `diff` is now clean** (the runtime copy was edited in place, then copied over the template). Previously they drifted comment-only. **Editing only the repo copy is a silent no-op.** `diff` them before trusting either. The runtime file is bind-mounted **by inode** (gotchas #8/#12), so it must be edited in place (truncate-and-write, never `sed -i`) and the router restarted afterwards — both were done on 2026-08-19.
@@ -57,58 +82,21 @@ The "+5.81 GiB drift" is exactly this KV + compute-buffer overhead, chained from
 |---|---|---|---|---|---|---|
 | `gemma4-e4b` | UD-Q4_K_XL + MTP, ~4.9 GiB | **resident** (load-on-startup) | 131072 | 4, kv-unified | ~114 | ALL aux work: Hermes compression/title-gen/curator/background_review, Hindsight retain+consolidation. sps 0.5, draft-mtp n=4, no-mmproj, reasoning-budget 8192 |
 | `deepseek-v4-flash` | UD-IQ3_XXS, ~98.4 GiB | **RESIDENT at boot** (2026-08-15) | **262144** | **4, kv-unified** (3 -> 4 on 2026-08-25) | **19.48 decode / 268.98 prefill @pp2053** (2026-08-12) — 🔴 **SHALLOW; do not compare depth numbers to it.** AT REAL DEPTH, MEASURED 2026-08-29: **14.39 decode / 155.50 prefill @ 65,835** (decode -26.1%, prefill -42.2%). One 65,835 turn = 441.5 s wall, of which **95.97% is prefill** — so every decode-side optimisation competes for ~4% of the turn | primary resident heavy model. 🔴 **CALLER LIST CORRECTED 2026-08-29 — it is NOT the "Hermes default".** `~/.hermes/config.yaml` `model.provider` is **`opencode-zen` (CLOUD)**, so the Telegram conversation does NOT touch this model; the two share the id `deepseek-v4-flash`, which is the same name-collision trap that hid the Epa Q cloud leak on 2026-08-28. Local callers are: **Hermes `delegation` subagents** (config.yaml:374-377, `base_url: 127.0.0.1:9292`), **pi + all 5 pi-kalam roles** (`~/.pi/agent/models.json`), and **the Epa Q executor** (`~/Dev/automated-workflows`, per-task isolated `hermes chat` pinned via `--provider custom:local-models -m deepseek-v4-flash` CLI flags — env-var pin was inert, cloud-leak fixed 2026-08-28; one task at a time — see `### Epa Q` under Hermes). sps 0.5, cache-reuse 256, no dspark sidecar (OOM-killed 2026-08-06). Cold load 3–11 min. Coexists only with gemma4-e4b (98.4+4.9 = 103.3 GiB < 120 GiB cap). `n_ctx_train` is **1048576** — we run 25% of it. 🔴 **Briefly lowered to 131072 on 2026-08-25 and REVERTED the same day — 128k does not fit this workload.** 🔴 **THE FIGURES BELOW MEASURE CLOUD-ZEN TELEGRAM TRAFFIC, NOT THIS MODEL** (corrected 2026-08-29). They were used to justify this model's `ctx-size` and should not have been: Telegram runs on `opencode-zen`. MEASURED over 38 Telegram sessions / 7 d: mean prompt/call **median 65,835, p90 119,394, max 129,403** — *cloud*. **LOCAL DS4's own traffic, measured 2026-08-29 from 3 days of `llama-router` journal (4,395 prefills): 98.7% are <=8,192 tokens; only 5 exceeded 65,536 (0.11%); only 2 exceeded 98,304 (0.05%); ZERO exceeded 131,072; largest single prefill 104,550.** (Those are tokens EVALUATED after cache reuse, so true prompt sizes run somewhat higher.) **Consequence: `ctx 131072` is very likely safe here and would return the measured 2.58 GiB — the compaction-floor objection below is derived from the cloud median and does not apply to local traffic. Not yet actioned; verify against a longer window first, and keep headroom above the 104,550 max.** At ctx 131072 the INPUT budget is only 98,304 (window minus Hermes' `max_tokens` 32768 reservation), so **p90 traffic does not fit**, and the median already exceeded the 64,000 compaction threshold. Session lifespan barely moves this (sub-2h sessions already median 60,614), so `session_reset` does not rescue a smaller window — the size comes from tool-heavy agentic turns inside ONE session. The 131072 experiment did return **2.58 GiB of GTT** (108.65 -> 106.07), which is 4x the KV-only estimate — so **`ctx` IS a memory lever** — but that memory is not available at an acceptable fit. Under kv-unified `n_ctx_slot == ctx-size`, NOT split |
-| **`qwen3.8-27b-q4`** | **UD-Q4_K_XL, ~34.2 GiB resident** | **on-demand — the ONLY swap target** | 262144 | 1, kv-unified | **31.3 / 32.6 decode** (MEASURED in prod 2026-08-19); 12.4 spec-off | `spec-type = draft-mtp`, **`spec-draft-n-max = 5`**. sha256 `3f227079…bc8b01e`. **Evaluated 2026-08-19 and REJECTED as a daily driver** — faster per token than DS4 but `parallel = 1` with reasoning always on, so it loses on real multi-caller work. MTP embedded (`blk.64.nextn.*`), no sidecar. The Q8_0 twin was deleted 2026-08-20 (section + 29 GB GGUF) |
 
-### Qwen3.8-Flash-Next (`qwen4exp`) — evaluated 2026-08-26, REJECTED as a DS4 replacement
+**Model swap:** `~/Dev/strix-halo-llm-stack/tools/swap-model.sh {ds4|status}` (path corrected 2026-08-10 — it is NOT `~/llama-stack/swap-model.sh`; that is runtime data and holds no scripts). No on-demand alternative currently exists — `qwen3.8-27b-q4` (the last one) was decommissioned 2026-08-30; the script's general mechanism was kept for a future model. Image-gen (sd.cpp ~19 GiB GTT + 8.7 GiB host RAM) still requires an eviction wrapper.
 
-⚠️ **Not integrated — this was a standalone eval container on :10098, never added to `models.ini`.**
-Released same-day (125B MoE, 6B active, +51B n-gram embedding table, GDN+QSA hybrid
-attention). Built from mainline llama.cpp + unmerged PR #27742
-(`035e22731a7fd70b9854b3a2d64ec68e9b1a45d3`) inside the prod `kyuz0/amd-strix-halo-toolboxes`
-image (Vulkan/Mesa userspace identical to prod; only llama.cpp itself differs). Build artifacts
-kept at `~/llama-stack/eval-qwen4exp/` for reference (SHA-pinned; the PR has since moved).
-Two build gotchas hit and fixed, neither specific to this PR: (1) `/etc/alternatives/ld` is a
-**dangling symlink in the base image** — `-fuse-ld=bfd` or relinking it fixes `collect2: cannot
-find 'ld'`; (2) the built `llama-server` resolves `libllama.so` from the container's **system**
-`/usr/lib64` (the prod fork's old libs) unless `LD_LIBRARY_PATH` points at the build's own
-`bin/` — silently runs the wrong binary otherwise, symptom is `unknown model architecture`.
+🔴 **`HEAVY_OTHERS` in `swap-model.sh` and `HEAVY_MODELS` in `watchdog.env` must stay in lockstep** — both list every heavy id, and a stale list in either is a real OOM path, not cosmetics (that is exactly how the 08-19 `swap-model.sh ds4` bug passed its eviction guard vacuously). Trimmed to `qwen3.8-27b-q4,deepseek-v4-flash` on 2026-08-20; `HEAVY_OTHERS` is now empty and `HEAVY_MODELS` is just `deepseek-v4-flash` (2026-08-30, qwen3.8-27b-q4 decommissioned) — no on-demand model exists to list.
 
-**🔴 REJECTED — decisive, not just blocked.** At the median REAL Hermes prompt depth
-(**65,835 tokens**, measured 2026-08-25 over 38 sessions), decode was **10.78 t/s**. 🔴 **The "55% of DS4's 19.48" claim was an apples-to-oranges error (corrected 2026-08-29): 19.48 is a pp2053 number.** DS4's MEASURED decode at that same 65,835 depth is **14.39 t/s**, so qwen4exp was **75% of DS4, not 55%** — still WORSE than DS4, verdict unchanged, margin overstated by ~20 points, despite a +18–33% headline advantage at shallow
-depth (pp512/pp2053, matching a [r/StrixHalo report](https://www.reddit.com/r/StrixHalo/comments/1vz5yb3/)
-on equivalent hardware). Prefill degraded smoothly and monotonically with depth (274 t/s @2k →
-173 t/s @66k → still falling, 153 t/s @90k, no plateau) — this is not a bug to fix, it is the
-architecture's cost profile at the context lengths this workload actually uses. p90 depth
-(119,394) was not fully measured (client timeout at 600s, server-side 77% through with no
-sign of recovery) but the trend leaves no realistic path to competitive numbers there.
+✅ **`load-on-startup` is DS4, and that is now the intended policy** (2026-08-20). A router restart brings DS4 back, regardless of what was resident before — which is what you want, because every unattended caller is pinned to DS4. No on-demand model exists to leave unloaded any more (2026-08-30).
 
-Two structural findings, independent of the throughput verdict:
-- **Memory moves from GTT to host RAM, not away entirely.** At ctx 131072, GTT was only
-  **72.36 GiB** (vs DS4's 98.4) — genuinely better than DS4 on the GPU-memory axis. But the
-  51B-param n-gram table is mmap'd to host RAM (`--load-mode none`), and **prefill** (not just
-  decode) pulls enough of it through page cache that `MemAvailable` fell from 111 GiB to
-  14–19 GiB under load — the same metric `llama-watchdog`'s `health_loop` alerts on below
-  3 GiB. Not measured at ctx 262144 (the ctx this workload actually needs) due to time budget.
-- **The reported multi-slot desync assert did not reproduce** in limited testing (`-np 2`,
-  both explicit dual-slot concurrent requests and 4 sequential auto-routed ones) — but this is
-  **not proof it's fixed**; the specific LRU-driven handoff the PR thread describes wasn't
-  specifically forced. Report as unresolved, not resolved.
-
-**Re-check trigger:** not on a timer. Revisit only if the decode-at-depth curve changes
-materially — MTP landing (the PR author confirmed WIP, not yet available) is the most likely
-lever, since it's a bigger multiplier than anything else measured on this box (`qwen3.8-27b-q4`
-gained ~2.5x from MTP tuning alone). A shallow-context headline number is not a reason to
-re-test; the depth curve is the whole story here.
-
-**Model swap:** `~/Dev/strix-halo-llm-stack/tools/swap-model.sh {ds4|qwen|status}` (path corrected 2026-08-10 — it is NOT `~/llama-stack/swap-model.sh`; that is runtime data and holds no scripts). `qwen` means **qwen3.8-27b-q4**. Both directions measured at **~23 s**, and the script refuses to load a second heavy model unless the first is CONFIRMED evicted. Image-gen (sd.cpp ~19 GiB GTT + 8.7 GiB host RAM) still requires an eviction wrapper.
-
-🔴 **`HEAVY_OTHERS` in `swap-model.sh` and `HEAVY_MODELS` in `watchdog.env` must stay in lockstep** — both list every heavy id, and a stale list in either is a real OOM path, not cosmetics (that is exactly how the 08-19 `swap-model.sh ds4` bug passed its eviction guard vacuously). Both were trimmed to `qwen3.8-27b-q4,deepseek-v4-flash` on 2026-08-20.
-
-✅ **`load-on-startup` is DS4, and that is now the intended policy** (2026-08-20). A router restart brings DS4 back and leaves qwen3.8-27b-q4 unloaded, regardless of what was resident before — which is what you want, because every unattended caller is pinned to DS4. If qwen is wanted after a restart, run `swap-model.sh qwen` by hand.
-
-> **Residency is a runtime state, not config.** The table above is the *steady state after a router restart* — DS4 + gemma; qwen3.8-27b-q4 is `load-on-startup = false` and never comes up on its own. **As of 2026-08-20 the live state matches it again.** A manual `swap-model.sh qwen` or any request naming the unloaded Q4 legitimately changes residency; the watchdog heavy-model mutex evicts as designed. **That is normal operation — do not "fix" it and do not log it as drift.** Check live state with `curl -s localhost:9292/models | python3 -c "import json,sys;[print(m['id'],m['status']['value']) for m in json.load(sys.stdin)['data']]"` before drawing conclusions from this table.
+> **Residency is a runtime state, not config.** The table above is the *steady state after a router restart* — DS4 + gemma, both `load-on-startup = true`; no third, on-demand model exists any more (2026-08-30, `qwen3.8-27b-q4` decommissioned). If a future on-demand model is added back, a manual `swap-model.sh <target>` legitimately changes residency and the watchdog heavy-model mutex evicts as designed — **that would be normal operation, not drift.** Check live state with `curl -s localhost:9292/models | python3 -c "import json,sys;[print(m['id'],m['status']['value']) for m in json.load(sys.stdin)['data']]"` before drawing conclusions from this table.
 >
-> 🔴 **But a hand-loaded Q4 is not free of consequences:** while it is resident, DS4 is not, and every unattended caller pinned to DS4 (both check-in crons, Hermes `model.default`, the Epa Q executor via `epaq-dispatch`) will trigger a router autoload that evicts it. If two callers want two different heavy models at once, the mutex cannot save you — it guards CO-RESIDENCY, not CONTENTION (2026-08-19 21:37 OOM). Load the Q4 when you are at the keyboard, and expect to lose it at 21:35 or whenever an Epa Q task runs (the 23:00 overnight-tasks run no longer exists).
+> 🔴 **The paragraph that used to be here** (about hand-loading `qwen3.8-27b-q4` and
+> the mutex only guarding co-residency, not contention) **no longer applies** — that
+> model was decommissioned 2026-08-30 and no on-demand model exists to hand-load. The
+> underlying mutex caveat (guards CO-RESIDENCY, not CONTENTION — 2026-08-19 21:37 OOM)
+> still stands as a general fact and applies again the moment a future on-demand model
+> is added back.
 
 ## Role → model mapping (aliases GONE — consumers pin concrete ids)
 
@@ -165,7 +153,7 @@ re-test; the depth curve is the whole story here.
 - **Config:** `~/.hermes/config.yaml`
 - 🔴 **`timezone: 'Europe/Dublin'` (2026-08-25)** — was `''`, which makes `hermes_time.now()` fall back to `datetime.now().astimezone()` and attach a **fixed offset**, not a `ZoneInfo`. `cron/jobs.py` feeds that datetime to `croniter` as its base, so on the autumn DST switch the stale summer offset computed the next fire an hour early **and then fired again at the correct time — a duplicate morning brief** (25 Oct 2026: 06:00 *and* 07:00). Now one fire at 08:00. **Hermes cron is LOCAL wall-clock: never hand-edit a cron expr for DST** — `0 7 * * *` already means 07:00 Dublin year-round. ⚠️ `get_timezone()` **caches per process**, and the cron ticker lives **inside `hermes-gateway.service`** (no separate unit), so restart that and verify on the running process. Today's offset proves nothing (both agree until the transition) — discriminate with a throwaway job scheduled *past* the boundary: `hermes cron create "0 7 25 10 *" ...` → ZoneInfo gives `2026-10-25T08:00:00+00:00`, fixed-offset gives `07:00+01:00`.
 - `model.default: deepseek-v4-flash`, `provider: custom:local-models` — **restored 2026-08-20** after the 08-19 qwen evaluation had temporarily pointed it at `qwen3.8-27b-q4`. This is what cron jobs with `model: null` resolve to, so it must always name a RESIDENT model.
-- **custom_providers** `Local Models` → `http://127.0.0.1:9292/v1`, api_key `unused-llama-router-direct`, max_tokens 32768, provider-level `model: deepseek-v4-flash`, models = **[deepseek-v4-flash, gemma4-e4b, qwen3.8-27b-q4]** (the Q8_0 `qwen3.8-27b` was removed 2026-08-20 along with its GGUF); `model.context_length: 262144` (3-way sync with models.ini + pi contextWindow; briefly 131072 on 2026-08-25, reverted same day). 🔴 **This key also sets Hermes' compaction point, and the formula is NOT `0.5 x ctx`:** it is `max((context_length - max_tokens) x compression.threshold, MINIMUM_CONTEXT_LENGTH)` where `MINIMUM_CONTEXT_LENGTH = 64_000` (`agent/model_metadata.py:413`) and `max_tokens = 32768`. At 262144 -> **114,688** (the percentage governs, so `compression.threshold` is a live knob — `0.8` would give ~183k). At 131072 -> 49,152 floored up to **64,000**, where the floor binds and **`compression.threshold` becomes INERT** (any value <= 0.65 gives the same number). ⚠️ `compression.threshold: 1.0` at ctx 131072 yields 98,304 input + 32,768 output = exactly the window, zero margin — do not use it. Every compaction rewrites the prefix = unavoidable re-prefill of summary+tail (DS4 logs `cache_reuse is not supported by this context`); the system prompt and `protect_first_n` head stay cached.
+- **custom_providers** `Local Models` → `http://127.0.0.1:9292/v1`, api_key `unused-llama-router-direct`, max_tokens 32768, provider-level `model: deepseek-v4-flash`, models = **[deepseek-v4-flash, gemma4-e4b]** (`qwen3.8-27b-q4` removed from this list and from the sibling `Local Models No Think` entry 2026-08-30, model fully decommissioned; the `Local Models No Think` entry itself is **inert since 2026-08-31** — Epa Q's per-task thinking-off routing was reverted, nothing references it now, kept only for manual A/B runs; the Q8_0 `qwen3.8-27b` twin was removed earlier, 2026-08-20, along with its GGUF); `model.context_length: 262144` (3-way sync with models.ini + pi contextWindow; briefly 131072 on 2026-08-25, reverted same day). 🔴 **This key also sets Hermes' compaction point, and the formula is NOT `0.5 x ctx`:** it is `max((context_length - max_tokens) x compression.threshold, MINIMUM_CONTEXT_LENGTH)` where `MINIMUM_CONTEXT_LENGTH = 64_000` (`agent/model_metadata.py:413`) and `max_tokens = 32768`. At 262144 -> **114,688** (the percentage governs, so `compression.threshold` is a live knob — `0.8` would give ~183k). At 131072 -> 49,152 floored up to **64,000**, where the floor binds and **`compression.threshold` becomes INERT** (any value <= 0.65 gives the same number). ⚠️ `compression.threshold: 1.0` at ctx 131072 yields 98,304 input + 32,768 output = exactly the window, zero margin — do not use it. Every compaction rewrites the prefix = unavoidable re-prefill of summary+tail (DS4 logs `cache_reuse is not supported by this context`); the system prompt and `protect_first_n` head stay cached.
 - ⚠️ **A running Hermes session keeps its pinned model in session state** — config changes do not move it retroactively. Start a new session (or switch in-session) to pick up a `model.default` change. This is what left the user on the slow Q8_0 on 08-19.
 - **Cron model pins (both on `deepseek-v4-flash` as of 2026-08-20):** `morning-check-in` `827131b2c8b5` (07:30), `night-check-in` `5d37a9e1e859` (21:35). Every other job runs `model: null` and therefore resolves to `model.default`. 🔴 **These pins are the load-bearing guard for gotcha #6** — an unattended job naming an unloaded ~98 GiB model is the OOM path. Re-check them after ANY model swap.
 - **Epa Q crons (2026-08-27):** `epaq-dispatch` `0fd2c2ecdaed` (*/15), `epaq-supervise` `b97ea1e859c6` (*/10). Both are `--no-agent --script` (`~/.hermes/scripts/run_epaq_{dispatch,supervise}.sh`), so **the cron tick itself makes no model call** — the DS4 consumer is the *executor* that `epaq-dispatch` spawns, and it is pinned to the RESIDENT DS4, so gotcha #6 stays closed. The `.sh` wrappers redirect to their own logs, so `hermes cron --no-agent` sees empty stdout and stays silent each tick.

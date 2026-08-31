@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # swap-model.sh — manually swap the resident heavy model on the llama.cpp router.
 #
-# The router (:9292) hosts gemma4-e4b (always resident, fast aux) plus ONE of
-# the heavy models — they CANNOT coexist (qwen3.8-27b-q4 34 + ds4 98.4 + gemma
-# 4.9 = 130 GiB > 120 GB VRAM cap).
+# The router (:9292) hosts gemma4-e4b (always resident, fast aux) plus AT MOST
+# ONE heavy on-demand model alongside DS4 — they cannot all coexist within the
+# ~124 GiB VRAM cap.
 #
-#   qwen  -> the OTHER model (fast on-demand swap target, benchmark/coding)
 #   ds4   -> the primary resident heavy model (daily driver)
+#   (no on-demand alternative currently defined — qwen3.8-27b-q4 was
+#    decommissioned 2026-08-30; see changelog. To add a future one back: set
+#    a variable like $QWEN below, add it to HEAVY_OTHERS, and add a case
+#    branch mirroring the old `qwen)` one — kept in git history if needed.)
 #
-# Usage: swap-model.sh {ds4|qwen|status}
+# Usage: swap-model.sh {ds4|status}
 #
 # 🔴 ROUTER LIFECYCLE ROUTES ARE BODY-FORM ONLY. MEASURED 2026-08-07:
 #     POST /models/{id}/unload  -> 404 File Not Found      (what this script used
@@ -23,16 +26,17 @@
 # model after an eviction we could not confirm.
 set -euo pipefail
 ROUTER="${ROUTER:-http://127.0.0.1:9292}"
-QWEN="qwen3.8-27b-q4"          # preferred: UD-Q4_K_XL, 31-33 t/s, ~34 GiB
 DS4="deepseek-v4-flash"
-# 🔴 EVERY heavy model id, including retired/alternate quants. The `ds4` branch
-# evicts ALL of these, not just $QWEN. This list going stale is a REAL OOM path,
-# not a tidiness issue: on 2026-08-19 the script knew only `qwen3.8-27b` while
-# `qwen3.8-27b-q4` was resident, so `unload qwen3.8-27b` returned "already
-# unloaded", the CONFIRMED-eviction guard passed vacuously, and DS4 would have
-# loaded on top of a resident heavy model (98.4 + 34 + 4.9 > 124 GiB).
+# 🔴 EVERY heavy model id besides DS4, including retired/alternate quants. The
+# `ds4` branch evicts ALL of these before loading. This list going stale is a
+# REAL OOM path, not a tidiness issue: on 2026-08-19 the script knew only
+# `qwen3.8-27b` while `qwen3.8-27b-q4` was resident, so `unload qwen3.8-27b`
+# returned "already unloaded", the CONFIRMED-eviction guard passed vacuously,
+# and DS4 would have loaded on top of a resident heavy model.
 # ⚠️ Keep in lockstep with HEAVY_MODELS in observability/stack/llama-watchdog/watchdog.env.
-HEAVY_OTHERS="qwen3.8-27b-q4"   # Q8_0 qwen3.8-27b deleted 2026-08-20 (section + GGUF)
+# Empty since 2026-08-30 (qwen3.8-27b-q4 decommissioned) — no on-demand
+# alternative currently exists. Repopulate this if one is added back.
+HEAVY_OTHERS=""
 
 # Sets REPLY_CODE / REPLY_BODY. Never fails the script itself — callers decide.
 REPLY_CODE=""
@@ -176,21 +180,15 @@ case "${1:-status}" in
     wait_loaded "$DS4" "deepseek-v4-flash" || exit 1
     echo; status
     ;;
-  qwen)
-    echo "Swapping to $QWEN (fast on-demand swap target: benchmark/coding)..."
-    unload "$DS4" "deepseek-v4-flash" || exit 1
-    load "$QWEN" "$QWEN" || exit 1
-    wait_loaded "$QWEN" "$QWEN" || exit 1
-    echo; status
-    ;;
   status)
     status
     ;;
   *)
-    echo "Usage: swap-model.sh {ds4|qwen|status}"
-    echo "  ds4   -> load deepseek-v4-flash (evicts ALL of: $HEAVY_OTHERS)"
-    echo "  qwen  -> load $QWEN (evicts ds4)"
+    echo "Usage: swap-model.sh {ds4|status}"
+    echo "  ds4    -> load deepseek-v4-flash (evicts ALL of: ${HEAVY_OTHERS:-<none defined>})"
     echo "  status -> show which heavy model is resident"
+    echo "  (no on-demand alternative is currently defined — see header comment"
+    echo "   for how to add one back)"
     exit 1
     ;;
 esac

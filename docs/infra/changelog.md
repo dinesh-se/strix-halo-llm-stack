@@ -26,40 +26,122 @@ captured at the time and is marked accordingly.
 
 ---
 
-## 2026-08-31 — Epa Q thinking-off-for-coding policy validated on real tasks
+## 2026-08-31 (later) — REVERTED: Epa Q per-task reasoning routing removed, model default restored
+
+**Observed:** Dinesh's verdict from running the queue: turning reasoning off by
+task kind did not pay off in practice. The validation entry immediately below
+was a transcript audit — did the task complete, were reasoning blocks absent,
+was `delegate_task` unused — not a quality comparison against thinking-on runs,
+so it could not have detected a quality regression by construction. The
+supporting A/B (2026-08-29 entry) was single-turn and tool-less; real executor
+work is multi-turn agentic loops where tool selection is itself a decision —
+the exact case that entry's own discriminator says needs thinking ON. `kind` is
+also too coarse to be the switch: plainly-coding tasks land in `general`.
+
+**Changed:** code + docs only, no config edit.
+1. `~/Dev/automated-workflows/workers/epaq/executor.py` — removed
+   `LOCAL_PROVIDER_NOTHINK`; `_hermes_session_factory` is back to
+   `(prompt, transcript)` and always builds on `LOCAL_PROVIDER`
+   (`custom:local-models`). `SessionFactory` no longer takes `task`;
+   `_HermesSubprocessSession` no longer takes a `provider`;
+   `_assert_local_provider()` is back to checking `LOCAL_PROVIDER` only.
+2. `tests/test_epaq_executor.py` — the four no-think tests dropped, factory
+   signatures restored, `test_executor_nothink_toolsets_matches_a_live_transcript`
+   renamed `..._toolsets_matches_a_live_transcript`.
+3. `epa_q/REQUIREMENTS.md` §9.4 + §8, `epa_q/RUNBOOK.md` §6 — marked reverted;
+   the 2026-08-29 measurements are kept as evidence, not policy.
+4. **KEPT (independent of reasoning, still live):** `delegation.provider:
+   opencode-zen` and the executor's `-t` toolset list excluding `delegation`
+   (§9.2 — an executor task is pinned local precisely because it touches repo
+   payload, so it must not be able to hand that payload to a Zen delegate).
+5. `~/.hermes/config.yaml` **untouched** — the `Local Models No Think` entry
+   stays but is now inert (nothing references it), kept for manual A/B runs.
+   The 🔴 never-send `reasoning_effort: high`/`max` to local ds4 rule also
+   stands; that one is about the delegation config, not per-task routing.
+
+**Expected:** every Epa Q executor task runs on deepseek-v4-flash's default
+reasoning again, as it did before 2026-08-29. Slower coding tasks than the
+last two days, no per-task behaviour differences to reason about.
+
+**Refs:** `epa_q/REQUIREMENTS.md` §9.4 (revert rationale), `epa_q/RUNBOOK.md`
+§6, the two entries below.
+
+**Smoke test:** `.venv/bin/python -m pytest tests/ -q` → 1285 passed, 0 failed
+(the previously failing supervisor test was a signature leftover, restored).
+`grep -n "LOCAL_PROVIDER" workers/epaq/executor.py` → no `*_NOTHINK` constant.
+Live probe of the restored route (direct POST to `:9292`, model
+`deepseek-v4-flash`, no `chat_template_kwargs`, no `reasoning_effort`): reply
+`ok`, `finish_reason: stop`, **`reasoning_content` 286 chars / 57 completion
+tokens** — thinking is ON by default again, as before 2026-08-29.
+
+🔴 **Correction to the 2026-08-29 (later) entry: local ds4 does NOT run
+"uncapped `xhigh`" reasoning.** Read from the live chat template
+(`curl -s ':9292/props?model=deepseek-v4-flash' | jq -r .chat_template`):
+`reasoning_effort` defaults to Jinja **`none`**, and the template implements
+only `high` and `max` branches — **`xhigh` does not exist in it**. Each branch
+is a *prompt injection*, not a sampler setting: it prepends "Reasoning Effort:
+Absolute maximum with no shortcuts permitted…" (high) or "Beyond maximum —
+exhaustive, relentless…" (max) to the system prompt, which is the mechanism
+behind that entry's measured 32,768-token / zero-output runaway. Thinking is
+ON by default (llama.cpp defines `enable_thinking`; no `reasoning-budget` in
+models.ini caps it) but at **no effort level**. Probes on `:9292`, trivial
+prompt: default → `reasoning_content` 58 chars / 21 completion tokens;
+`chat_template_kwargs.enable_thinking:false` → 0 chars / 7 tokens;
+`reasoning_effort:high` → 38 chars / 16 tokens (a trivial prompt does not
+exercise the preamble — the template text, not this probe, is the evidence for
+what `high` does). "Uncapped" was right; "`xhigh`" was never a real level.
+
+🔴 **Second correction to that entry:** its "0 reasoning blocks in every
+transcript" evidence proves nothing about thinking. `display.show_reasoning:
+false` in `~/.hermes/config.yaml` means reasoning is never PRINTED (`cli.py`
+gates every reasoning render on it), so a transcript looks identical
+thinking-on and thinking-off. Verify reasoning state on the wire
+(`reasoning_content` from a direct API call), never from a `hermes chat`
+transcript.
+
+⚠️ Not yet exercised by a live dispatch — the next `epaq-dispatch` coding task
+is the end-to-end confirmation; expect slower coding turns than the last two
+days, not a visible transcript difference.
+
+---
+
+## 2026-08-31 — Epa Q thinking-off-for-coding: transcript audit (superseded by the revert above)
+
+🔴 **This entry's conclusion was wrong — corrected by the revert entry above.**
+`display.show_reasoning: false` means reasoning is never printed, so the
+"0 reasoning blocks" signature cannot distinguish thinking-on from thinking-off.
+The audit below stands only for what transcripts can actually show (task
+outcome + tool calls), NOT for reasoning state. The policy was also reverted on
+2026-08-31, so "safe to keep" is moot.
 
 **Observed:** the 2026-08-29 (later) entry below shipped a tiered reasoning
 policy — `task.kind == "coding"` routes to `custom:local-models-no-think`
 (thinking OFF) — but the A/B that justified it used single-turn, no-tool
 synthetic tasks. Real Epa Q coding tasks are multi-turn agentic loops against a
 repo with tool calls, the one category thinking had won in the counter-case, so
-the OFF default was unvalidated on the workload it actually serves. This is the
-real-task validation (2026-08-31, 2 days post-deploy).
+the OFF default was unvalidated on the workload it actually serves. This audit
+(2026-08-31, 2 days post-deploy) was meant to be that real-task validation.
 
-**Changed:** none (verification only). Confirmed `~/.hermes/config.yaml` still
-carries both `custom_providers` entries (`Local Models` thinking-on default,
-`Local Models No Think` with `extra_body.chat_template_kwargs.enable_thinking:
-false`) and `delegation.provider` still points at `opencode-zen` — nothing
-reverted. Executor routing code (`LOCAL_PROVIDER_NOTHINK`,
-`_hermes_session_factory`) unchanged. Also confirmed the executor toolset
-exclusion (`-t` without `delegation`) is in effect.
+**Changed:** none (verification only). Confirmed `~/.hermes/config.yaml` carries
+both `custom_providers` entries (`Local Models` thinking-on default, `Local
+Models No Think` with `extra_body.chat_template_kwargs.enable_thinking: false`)
+and `delegation.provider` still points at `opencode-zen`.
 
-**Expected:** thinking-off stays safe as the coding default if real multi-turn
-coding tasks complete at full quality with no visible reasoning.
+**Expected (not met):** to confirm no-think routing held on real coding tasks.
+Could not be established — see correction above.
 
 **Smoke test:** audited the three coding tasks that ran since deploy from
 `epaq.db` + their `.epaq/runs/task-*.log` transcripts:
-- #21 CivicSense v0 pipeline — completed, 246 tool calls, 0 reasoning blocks,
-  0 delegate_task.
-- #23 Epa Q state-machine — completed, 1290 tests pass, 0 reasoning blocks,
-  0 delegate_task.
+- #21 CivicSense v0 pipeline — completed, 246 tool calls, 0 delegate_task.
+- #23 Epa Q state-machine — completed, 1290 tests pass, 0 delegate_task.
 - #24 website redesign — completed (after retry-1 failed on a tool-iteration
-  limit at the delivery step, unrelated to thinking); both attempts show 0
-  reasoning blocks, 0 delegate_task.
-- Result: 3/3 coding tasks completed, 0 routing failures (no visible reasoning
-  on any kind=coding turn), 0 delegate_task attempts. Clean pass at the
-  2–3-task volume the "Still open" paragraph required. REQUIREMENTS.md §9.4
-  "Still open" updated to "Validated 2026-08-31".
+  limit at the delivery step, unrelated to reasoning); both attempts show
+  0 delegate_task.
+- Result: 3/3 coding tasks completed, 0 delegate_task attempts — but the
+  no-think signature is NOT verifiable from transcripts (`show_reasoning:
+  false`), and the policy was reverted 2026-08-31 regardless. See the revert
+  entry above for the wire-level confirmation that thinking is ON by default
+  again.
 
 
 

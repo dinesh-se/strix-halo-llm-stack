@@ -26,6 +26,150 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-31 (latest+1) — Compression split by route: `~/.hermes-epaq` profile for Epa Q, main config to auto
+
+**Observed:** Dinesh asked whether dropping DS4's `ctx-size` 262144 -> 131072 and raising
+`compression.threshold` to 0.8/0.9 would save time. Measurement said no, and the
+investigation turned up three things the SSoT had wrong.
+
+1. 🔴 **`compression.threshold: 0.5` has been INERT.** `ContextCompressor._effective_threshold_percent()`
+   raises any window under `_SMALL_CTX_WINDOW_LIMIT` (512,000) to a **0.75** floor
+   (raise-only). The formula documented at current.md's custom_providers bullet omitted this,
+   which is why its "at 262144 -> 114,688" never matched the logs: the real trigger was
+   **196,608** (`0.75 x 262,144`, `max_tokens` NOT subtracted because the Zen route sets it
+   to None). Confirmed live: `agent.log` 09:44:01 `Context compressor initialized:
+   context_length=262144 threshold=196608 (75%)`.
+2. 🔴 **The local compressor was summarizing the CLOUD conversation.** `auxiliary.compression`
+   was pinned to `gemma4-e4b` at `127.0.0.1:9292`, and the summarizer is resolved from that
+   block regardless of the main model's provider (`agent_init.py:2786` passes
+   `summary_model_override=None`). Gateway log, verbatim: `Compression model gemma4-e4b
+   (custom) context is 131,072 tokens, but the main model deepseek-v4-flash (opencode-zen)'s
+   compression threshold was 196,608`. So a 131,072-window summarizer was being handed
+   conversations up to **216,782 tokens** (Zen) and **196,980** (Epa Q task 24's overnight
+   retry). That mismatch is the cause of the **6 `decode() failed: Context size has been
+   exceeded`** errors gemma threw on 2026-08-30 16:14:13, and of the repeating
+   `agent.conversation_compression` WARNING (13:30, 17:50, 19:05, 20:37, 22:05 on 08-30).
+   Cost: **28 gemma prefills of 40,221-77,496 tokens in 72 h, 37-80 s each (~26 min of local
+   GPU)**, much of it summarizing cloud sessions.
+3. 🔴 **`model.context_length: 262144` was a leftover from the local era.** Backup archaeology:
+   the key held 262144 while `model.provider` was `custom:local-models` (through the 08-27
+   backup) and simply stayed when the provider flipped to `opencode-zen` on 08-28. It was
+   never re-derived for Zen — it mirrored `models.ini`'s `ctx-size`.
+
+**Measured (72 h of `llama-router` journal, DS4 ports 36889+52667, probes excluded):** 1,060
+real prefills, median 702, p99 20,976, **max 86,990**, ZERO above 98,304. **62.1% of all DS4
+prefill wall time is prompts under 4,096 tokens.** ⚠️ These are tokens EVALUATED after cache
+reuse and are NOT context occupancy — Epa Q reached ~196,980 tokens of real context in the
+same window. Do not read the prefill distribution as "the window is empty"; that conflation
+was made and corrected in-session.
+
+**Changed:**
+- **NEW profile `~/.hermes-epaq/`** — 79 symlinks to `~/.hermes/*` (`.env`, `auth.json`,
+  `memories`, `skills`, `sessions`, `state.db`, `kanban.db`, `logs`, `SOUL.md`, `AGENTS.md`, ...)
+  plus ONE real file: `config.yaml`. Diffs from main:
+  `custom_providers[*].models.deepseek-v4-flash.context_length: 131072` on **both** local
+  entries (`Local Models` and `Local Models No Think` share a base_url; the lookup scans all
+  matching entries and takes the first that declares a valid value, so a divergent pair would
+  be order-dependent), plus two hardening changes made after Dinesh asked why the invocation
+  still needed `--provider`:
+  🔴 **the first cut of the profile was a straight copy of main, so it inherited
+  `model.provider: opencode-zen`** — the CLI flags were the ONLY thing keeping a profile
+  session local, exactly the 2026-08-28 condition. Now `model.provider: custom:local-models`,
+  so local is the default and the flags are defence-in-depth rather than the guarantee.
+  🔴 **`fallback_providers` listed `opencode-zen` twice** — a fail-OPEN cloud path that would
+  have fired even WITH the flags if the local router were unreachable. Now `[]` in the profile
+  (main keeps its cloud fallbacks). `model.context_length` also dropped from the profile; the
+  custom_providers per-model override is authoritative for the local route either way
+  (`agent_init.py`: "Must come AFTER the custom_providers branch so per-model overrides aren't lost").
+- **`~/.hermes/config.yaml`** (backup `config.yaml.bak-20260831-pre-epaq-profile`):
+  `auxiliary.compression` -> `provider: auto` with `model`/`base_url`/`api_key` emptied
+  (dropped the `extra_body.chat_template_kwargs.enable_thinking: false` and
+  `context_length: 131072`), and **removed `model.context_length: 262144`** so the window
+  resolves from provider metadata.
+- `hermes-gateway` restarted (NRestarts 0, active, no config errors).
+- **NOT changed:** `models.ini` (DS4 stays `ctx-size = 262144`), the router, gemma's window,
+  any unit file. The profile lowers only Hermes' *view* of the local window; the server keeps
+  262,144 as headroom so nothing can hard-fail at the provider boundary.
+
+**Expected:** Each route compacts with a summarizer it can actually feed. Cloud sessions stop
+consuming local GPU for summarization; Epa Q keeps gemma, now inside its window.
+
+**Refs:** `agent/context_compressor.py` (`_effective_threshold_percent`,
+`_compute_threshold_tokens`, `_SMALL_CTX_WINDOW_LIMIT=512_000`, `_MIN_CTX_TRIGGER_RATIO=0.85`);
+`agent/auxiliary_client.py::_resolve_auto_route` (step 1 = the *session's* runtime provider+model);
+`hermes_cli/config.py:1898 get_custom_provider_context_length`, `:772` (config path from
+`get_hermes_home()`); `hermes_constants._hermes_home_from_env`.
+
+**Smoke test:** PASSED — resolution exercised through Hermes' own `ContextCompressor`, not
+recomputed by hand.
+
+| route | resolved ctx | trigger | summarizer |
+|---|---|---|---|
+| main (Telegram / Zen) | 1,000,000 | 500,000 (50%) | `auto` -> session's own main model (Zen) |
+| Epa Q profile (local) | 131,072 | **73,728 (56%)** | `gemma4-e4b` local — **fits** its 131,072 window |
+
+- Live session through the profile with the executor's exact flags
+  (`HERMES_HOME=~/.hermes-epaq hermes chat --provider custom:local-models -m deepseek-v4-flash`):
+  session `20260831_121751_c4cb84`, returned `EPAQ_PROFILE_TEST_OK`; `agent.log` shows
+  `provider=custom in=19471`, and DS4 port 52667 logged the matching 19,471-token prefill.
+- Both YAML files parse; `diff` between them is exactly the 2 context_length hunks.
+
+**Open / not done:**
+- ✅ **Executor WIRED** (`~/Dev/automated-workflows`, uncommitted): new
+  `EPAQ_HERMES_HOME`/`EPAQ_HERMES_CONFIG` constants; `start()` sets
+  `env["HERMES_HOME"]` and calls `_assert_local_provider(EPAQ_HERMES_CONFIG)` so the
+  fail-closed preflight verifies the file `hermes chat` will really read.
+- 🔴 **Two existing safety tests had gone vacuous and were repointed.**
+  `test_a_remote_provider_aborts_before_any_process_starts` patched `HERMES_CONFIG`, which
+  `start()` no longer reads — the 08-28 leak guard was passing without testing anything.
+  `test_the_real_config_pins_the_executor_to_loopback` asserted against `~/.hermes`, so main
+  could be pinned local while the profile leaked. Both now target `EPAQ_HERMES_CONFIG`. Added
+  `test_the_child_is_pinned_to_the_epaq_hermes_profile`, which asserts the child env carries
+  `HERMES_HOME` — without it a task runs under `~/.hermes` and compacts on DS4 with no error,
+  just a slower wrong run. **Full suite 1294 passed.**
+- ✅ **END-TO-END RUN PASSED — task 28**, queued and refined normally by Dinesh, picked up by
+  the `*/15` dispatcher tick at `2026-08-31T11:45:06Z` and `completed` at `11:51:22Z`
+  (6m 16s, session `20260831_124507_78b922`, 22 messages / 11 API calls). The wired
+  `executor.py` was in place 17 min before the run started (mtime 12:27:38 local vs start
+  12:45:06 local), so this exercised the profile path, not the old one.
+  - **Every API call was local.** All 11 logged `provider=custom`, and the router shows
+    exactly 11 matching DS4 prefills between 12:46:43 and 12:51:15 — a 1:1 account with **zero
+    cloud calls**.
+  - **Aux work still lands on gemma under the profile:** gemma prefills at 12:45:09 (491 tok,
+    title generation) and 12:51:46 / 12:51:55 / 12:52:04 (2,571 / 2,725 / 3,571 tok,
+    post-run curator/memory). So the profile redirects the *conversation* without disturbing
+    aux routing.
+  - Task deliverables correct and contained: 3 new untracked files, `HEAD bd8a83e` unchanged,
+    no existing file modified.
+  - Wiring re-verified live against the REAL constants and REAL `~/.hermes-epaq/config.yaml`
+    (Popen captured, nothing else mocked): `HERMES_HOME=/home/dinesh-se/.hermes-epaq`,
+    preflight returns `http://127.0.0.1:9292/v1` from the **profile** config.
+- ⚠️ **STILL UNPROVEN: the compaction path itself.** Task 28 peaked at ~23k tokens, far under
+  the profile's 73,728 trigger, so no compaction fired and **no summarizer call was observed**
+  — the gemma-vs-DS4 routing that motivated the whole change is verified only by resolution
+  (`ContextCompressor` under `HERMES_HOME=~/.hermes-epaq` -> ctx 131,072 / trigger 73,728 /
+  `gemma4-e4b`), not by a live compaction. Confirm on the first Epa Q task long enough to
+  compact: the summary call must appear on gemma's port **58987**, not a DS4 port
+  (36889/52667). Equally unproven on the cloud side: no Telegram session has compacted since
+  `provider: auto` was set.
+- Earlier attempts to force a run by hand (tasks 26/27) failed at the refinement gate with
+  `missing "state"`. 🔴 That briefly looked like a regression from this session's config edit
+  (task 25 refined fine at 08:04 the same day) — **it was not**: the missing piece is the
+  elicitation state that `begin` -> conversation -> `save` produces, i.e. the flow was being
+  driven wrong, nothing to do with `auxiliary.compression` or `model.context_length`. Both
+  tasks were parked back to `captured` and remain inert.
+- ⚠️ **Zen's real served window is UNVERIFIED.** The 1,000,000 comes from a model-family
+  default (DS4's `n_ctx_train`), not from Zen: `GET https://opencode.ai/zen/v1/models`
+  returned **HTTP 403**. Measured Telegram traffic maxes at ~129,403 tokens, so both the old
+  196,608 and the new 500,000 sit above real usage and the change is inert in the observed
+  regime — but if Zen serves less than 500,000 a runaway session would hit a provider 400
+  before compaction fires. `compression.threshold_tokens` is the absolute-cap knob if that is
+  ever wanted; deliberately NOT set, since the ask was "auto for all settings".
+- Two config.yaml files now exist and must not drift — the `models.ini` two-copy trap
+  (2026-08-10) in a new place. Regenerate the profile from main rather than hand-editing.
+
+---
+
 ## 2026-08-31 (latest) — 44-package apt upgrade run; GRUB conffile warning in `current.md` was WRONG (ucf, not dpkg)
 
 **Observed:** Dinesh asked whether a kernel update was available. It was not —

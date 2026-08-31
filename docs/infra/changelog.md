@@ -26,6 +26,55 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-31 (later still) — `agent.reasoning_effort: high` removed; config back to overnight-era reasoning behaviour
+
+**Observed:** Dinesh asked whether the reasoning config had drifted from the
+pre-Epa-Q overnight-tasks era. Diffed
+`~/.hermes/config.yaml.bak-20260827-pre-vision` (last snapshot before Epa Q went
+live) against current. Six real differences; five are deliberate
+(`model.provider` → Zen brain, `delegation` → Zen, the `Local Models No Think`
+entry, `cron.script_timeout_seconds: 21600`, `auxiliary.vision.model`). The
+sixth was not: **`agent.reasoning_effort` was ABSENT in the overnight era and
+became `high` on 2026-08-29** as part of the reasoning-policy session — a
+global setting, never measured on its own.
+
+🔴 **It never affected local ds4 — verified on the wire, not from source.**
+`hermes chat --provider custom:local-models` asked to quote the start of its
+system prompt returned *"You are Hermes Agent, an intelligent AI assistant
+created by Nous Research."*, and the positive control with an explicit
+`--reasoning max` returned the **same** — no "Beyond maximum — exhaustive,
+relentless…" preamble. So Hermes forwards no reasoning effort at all to a plain
+loopback `custom_providers` route (`run_agent.py::_supports_reasoning_extra_body()`
+returns False for it; only OpenRouter / Nous / Vercel gateway / GitHub Models /
+LM Studio / Ollama routes get it). Where it WAS live: **Epa the orchestrator on
+opencode-zen**, which ran at `high` from 08-29 to now and at the provider
+default before that.
+
+**Changed:** `~/.hermes/config.yaml` — deleted line 32, `  reasoning_effort:
+high` (under `agent:`). Written in place, inode preserved. Backup:
+`~/.hermes/config.yaml.bak-20260831-095131-drop-reasoning-effort`. Nothing else
+touched — the brain/delegation split, the cron timeout fix and the vision model
+all stay.
+
+**Expected:** reasoning resolution identical to the overnight-tasks era
+(provider default everywhere, no global effort). Epa-on-Zen returns to Zen's
+own default depth.
+
+**Smoke test:** through Hermes' real loader (the mtime-keyed cache the gateway
+shares), `hermes_cli.config.load_config()` →
+`agent.reasoning_effort` **absent**, and
+`hermes_constants.resolve_reasoning_config(cfg, "deepseek-v4-flash")` → **None**
+— byte-identical resolution to
+`config.yaml.bak-20260827-pre-vision`, which also resolves `None`. No gateway
+restart needed: `gateway/run.py::_effective_reasoning_config()` calls
+`_load_reasoning_config()` per message off that mtime-keyed cache. ⚠️ The
+gateway's startup snapshot `self._reasoning_config` (`gateway/run.py:7152`) is
+only re-read on restart, so if any path still uses it, it clears at the next
+`hermes-gateway` restart or session reset (`session_reset` idle 180 min /
+04:00).
+
+---
+
 ## 2026-08-31 (later) — REVERTED: Epa Q per-task reasoning routing removed, model default restored
 
 **Observed:** Dinesh's verdict from running the queue: turning reasoning off by

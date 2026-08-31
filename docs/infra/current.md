@@ -1,6 +1,15 @@
 # AI Infra — Current State
 
-> **Last verified:** 2026-08-30 (later) — **`Qwen3.8-Flash-Next` (`qwen4exp`) eval
+> **Last verified:** 2026-08-31 — **44-package `apt upgrade` run; NO kernel update available**
+> (running `7.0.0-30-generic`, installed == candidate `7.0.0-30.30`), no reboot, and
+> **no infra config touched** — no `models.ini`, no router, no unit files. The serving
+> layer was reverified live afterwards (both models `loaded`, `llama-router` container
+> never restarted, `Up 26 hours` across the upgrade). 🔴 The **GRUB conffile warning in
+> the VRAM-model bullet below was WRONG and has been corrected**: `/etc/default/grub` is
+> **ucf-managed**, not a dpkg conffile, and is touched by `grub-efi-amd64` / `shim-signed`,
+> NOT by `grub-common`/`grub2-common`. A ucf 3-way prompt is **armed** for the next
+> `grub-efi-amd64`/`shim-signed` upgrade — keep the local version. See the changelog.
+> Prior: 2026-08-30 (later) — **`Qwen3.8-Flash-Next` (`qwen4exp`) eval
 > artifacts removed.** It was never integrated (standalone :10098 eval container,
 > never touched `models.ini`, REJECTED 2026-08-26 — decode at real workload depth
 > worse than DS4), so this was pure cleanup: deleted the 88 GiB GGUF
@@ -49,7 +58,7 @@
 
 ## Host
 
-- **Machine:** Beelink GTR9 Pro — AMD Ryzen AI MAX+ 395 (Strix Halo), Radeon 8060S (gfx1151, RDNA 3.5), 128 GB unified memory, Ubuntu (kernel 7.0.0-29).
+- **Machine:** Beelink GTR9 Pro — AMD Ryzen AI MAX+ 395 (Strix Halo), Radeon 8060S (gfx1151, RDNA 3.5), 128 GB unified memory, Ubuntu 26.04 LTS (kernel **7.0.0-30-generic**, verified 2026-08-31).
 - **Host RAM pressure (2026-08-25):** GTT holds **109.11 GiB of 122.7 GiB**, leaving only **13.59 GiB** for the entire OS and every service. Process RSS totals just 7.1 GiB — **the memory is in GTT and does NOT show in `ps`**, so "nothing is using it" is a misread. 🔴 **The 103.3 GiB figure below (98.4 DS4 + 4.9 gemma) is STALE by +5.81 GiB** — it was measured at `ctx 131072` bare; DS4 runs `ctx 262144 parallel 3` (now `parallel 4` — see the Models table) and gemma `ubatch-size 2048 parallel 4`, and compute buffers scale with ubatch × slots. Partly decomposed 2026-08-25: **`ctx` IS a lever — 262144 -> 131072 returned 2.58 GiB** (measured), well above the ~0.6 GiB the 4.5 MiB/1k KV figure predicts, because compute buffers scale with ctx as well as with ubatch x slots. The earlier "`ctx` is NOT the lever" claim was wrong. ⚠️ **But that 2.58 GiB is NOT claimable** — 128k does not fit the workload (see the DS4 row) and the change was reverted the same day.
 
 🟢 **FULLY DECOMPOSED 2026-08-29 via amdgpu `fdinfo` (per-process `drm-resident-gtt`, read through a `--pid=host` container — no eviction, no restart needed).** This is NOT a leak; it is memory that was never counted:
@@ -65,7 +74,7 @@ The "+5.81 GiB drift" is exactly this KV + compute-buffer overhead, chained from
 
 🔴 **Consequence: there is no reclaimable waste here.** Every GiB is either model weights or KV/buffer overhead actually in use. gemma's `ctx 131072` is NOT over-provisioned either — its prefill distribution (22 d, 38,439 requests) has **p99.9 = 58,220, max = 99,872** (the compression role summarizes whole conversations), so it needs the headroom. The only large lever on this box is a quant change (UD-IQ2_XXS: **-12.43 GiB**, +3.52% code / +14.70% prose PPL — see the 2026-08-29 changelog entry); `parallel` 4→3 (-1.94 GiB) reintroduces the watchdog-eats-a-slot bug fixed 2026-08-25.
 - **VM tuning:** `/etc/sysctl.d/99-llm-host-memory.conf` — `vm.swappiness=10`, `vm.vfs_cache_pressure=50` (2026-08-25). GTT is **unswappable**, so at the stock swappiness=60 the only reclaimable pages were the working sets of hermes / hindsight-daemon / llama-router — they were being paged out and had to fault back in before answering, which is what "Hermes is slow" actually was.
-- **VRAM model:** GTT memory model — BIOS UMA carveout at **512 MB minimum**, so the iGPU reaches ~124 GiB drawing from system RAM. 🔴 **SSoT drift fixed 2026-08-26 — this used to list only four of the SIX flags actually in `/etc/default/grub`.** All six, verbatim from `GRUB_CMDLINE_LINUX_DEFAULT`: `amd_iommu=off`, `amdgpu.dcdebugmask=0x12`, `ttm.pages_limit=32505856`, `ttm.page_pool_size=32505856`, `amdgpu.gttsize=126976`, `amdgpu.lockup_timeout=10000,60000,10000,10000`. **`amdgpu.gttsize=126976` is 124 GiB and is the actual source of the "~124 GiB usable" figure above** — it was previously undocumented here. `nogttspill` REMOVED (GTT is the memory model, not an overflow path). ⚠️ `/etc/default/grub` is a dpkg conffile owned by `grub2-common` — a package upgrade that offers "install the maintainer's version" will wipe all six; always keep the locally-modified version.
+- **VRAM model:** GTT memory model — BIOS UMA carveout at **512 MB minimum**, so the iGPU reaches ~124 GiB drawing from system RAM. 🔴 **SSoT drift fixed 2026-08-26 — this used to list only four of the SIX flags actually in `/etc/default/grub`.** All six, verbatim from `GRUB_CMDLINE_LINUX_DEFAULT`: `amd_iommu=off`, `amdgpu.dcdebugmask=0x12`, `ttm.pages_limit=32505856`, `ttm.page_pool_size=32505856`, `amdgpu.gttsize=126976`, `amdgpu.lockup_timeout=10000,60000,10000,10000`. **`amdgpu.gttsize=126976` is 124 GiB and is the actual source of the "~124 GiB usable" figure above** — it was previously undocumented here. `nogttspill` REMOVED (GTT is the memory model, not an overflow path). 🔴 **CORRECTED 2026-08-31 — `/etc/default/grub` is NOT a dpkg conffile, and `grub2-common` does NOT own it.** `dpkg -S /etc/default/grub` returns *no owning package*; the file is **ucf-managed**, and the only maintainer scripts that invoke `ucf` on it are **`grub-efi-amd64.postinst`**, `shim-signed.postinst` and `kdump-tools.postinst`. The old wording pointed the alarm at the wrong package in both directions: a `grub-common`/`grub2-common` upgrade is **harmless** (verified 2026-08-31 — `grub-common` 2.14-2ubuntu2.1 ships *no maintainer scripts at all*, and `grub2-common`'s postinst contains no `ucf`, no `update-grub` and no `/etc/default/grub` reference; `grub.cfg` is not even regenerated), while a **`grub-efi-amd64` or `shim-signed`** upgrade is the one that can wipe the six flags. 🔴 **A ucf 3-way prompt is ARMED and still pending** for those packages: the ucf cache (`/var/lib/ucf/cache/:etc:default:grub`, `3258f7cb…`, dated 2026-05-22) differs from the currently shipped template (`/usr/share/grub/default/grub`, `6c39b26d…`) on one line — `#GRUB_DISABLE_OS_PROBER=false` → `GRUB_DISABLE_OS_PROBER=true`. Maintainer-side change **plus** local modification = guaranteed conflict prompt on the next `grub-efi-amd64`/`shim-signed` upgrade. **Always keep the locally-modified version** (`N`, the default) — accepting the maintainer's version wipes all six flags. Known-good md5 of the live file: **`7fd80e7a83d6ce0021b8745686b3c836`** — check it after any grub/shim package upgrade.
 
 ## Router / serving
 

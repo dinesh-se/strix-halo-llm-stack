@@ -26,6 +26,90 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-31 (latest) — 44-package apt upgrade run; GRUB conffile warning in `current.md` was WRONG (ucf, not dpkg)
+
+**Observed:** Dinesh asked whether a kernel update was available. It was not —
+running `7.0.0-30-generic`, installed `7.0.0-30.30`, candidate `7.0.0-30.30`
+(apt index refreshed 10:58 the same morning, so the answer was current). But 49
+non-kernel packages were upgradable, including `grub-common` + `grub2-common`,
+and `current.md` carried an explicit landmine warning that `/etc/default/grub`
+is *"a dpkg conffile owned by `grub2-common`"* whose upgrade could wipe all six
+`GRUB_CMDLINE_LINUX_DEFAULT` flags. Traced it before running anything.
+
+🔴 **That warning was wrong, and wrong in BOTH directions.** `dpkg -S
+/etc/default/grub` returns *no owning package*; the file appears in no
+`*.conffiles` list. It is **ucf-managed**, and the only maintainer scripts that
+invoke `ucf` on it are **`grub-efi-amd64.postinst`**, `shim-signed.postinst`
+and `kdump-tools.postinst` — none of which were in this upgrade. Meanwhile the
+packages the warning *named* are inert: the new `grub-common` ships **no
+maintainer scripts at all** (control + md5sums only), and `grub2-common`'s
+postinst contains no `ucf`, no `update-grub` and no `/etc/default/grub`
+reference — `grub.cfg` is not even regenerated. So the doc would have caused a
+false alarm on a harmless upgrade and false calm on the dangerous one.
+
+🔴 **A ucf 3-way prompt is ARMED for the next `grub-efi-amd64` / `shim-signed`
+upgrade.** The ucf cache (`/var/lib/ucf/cache/:etc:default:grub`,
+`3258f7cb…`, dated 2026-05-22) differs from the currently shipped template
+(`/usr/share/grub/default/grub`, `6c39b26d…`) on one line:
+`#GRUB_DISABLE_OS_PROBER=false` → `GRUB_DISABLE_OS_PROBER=true`. Maintainer-side
+change **plus** local modification = guaranteed conflict prompt. Answer **keep
+the locally-modified version** (`N`, the default).
+
+Pre-flight also established: `needrestart` is **not installed**, so no package
+can auto-restart a service or prompt to; the simulated transaction touched none
+of `docker`/`containerd`/`systemd`/`libc6`/`mesa`/`vulkan`/`amdgpu`/`openssh`/
+`python3.x`/`libssl`; all Docker containers (llama-router, searxng, firecrawl-*,
+ntc023-pg) carry their own userspace and were structurally unaffected; and the
+only infra-owned host process linking an upgraded library was `workers.listener`
+(PID 511380, Epa Q) via `libbz2` — which keeps the old inode mapped and needs no
+restart. Epa Q was idle with a free `epaq_lease`, so the window was clean.
+
+**Changed:**
+- Ran `sudo apt upgrade` — **44 upgraded, 0 newly installed, 0 removed**. 5 held
+  back by Ubuntu's phased rollout (`nautilus`, `nautilus-data`,
+  `libnautilus-extension4`, `software-properties-common`,
+  `python3-software-properties`); deliberately left alone, desktop-only.
+  Notable: `bzip2`/`libbz2-1.0` `1.0.8-6build2` → `1.0.8-6ubuntu0.1` (security),
+  `grub-common`/`grub2-common` `2.14-2ubuntu2` → `2.14-2ubuntu2.1`,
+  `base-files` `14ubuntu6.1` → `14ubuntu6.2`, ~35 `language-pack-*`, plus
+  third-party `code` and `google-chrome-stable`.
+- `docs/infra/current.md` — **replaced the incorrect dpkg-conffile sentence** in
+  the **VRAM model** bullet with the ucf mechanism, the correct package list,
+  the pending `GRUB_DISABLE_OS_PROBER` conflict, and the known-good md5 of the
+  live file (`7fd80e7a83d6ce0021b8745686b3c836`) as a post-upgrade check.
+- **No infra config changed.** No `models.ini`, no router, no unit files, no
+  kernel, no reboot.
+
+**Expected:** Security + maintenance packages current, with the six amdgpu/ttm
+GRUB flags provably intact and the serving layer undisturbed. The `current.md`
+correction should make the *next* grub-family upgrade fail safe: the alarm now
+fires on `grub-efi-amd64`/`shim-signed` (where it belongs) instead of on
+`grub2-common` (where it did nothing).
+
+**Refs:** `ucf(1)` 3-way-merge semantics; `dpkg-query -W -f='${Conffiles}'`;
+`/var/lib/ucf/hashfile`; `apt-get -s dist-upgrade` simulation;
+`dpkg-deb --control` on the freshly downloaded `grub-common` /
+`grub2-common` 2.14-2ubuntu2.1 debs.
+
+**Smoke test:** PASSED — run on the *running system* after the upgrade, not on
+the files alone.
+- `/etc/default/grub` md5 **`7fd80e7a83d6ce0021b8745686b3c836`** — byte-identical
+  to the pre-upgrade baseline; `amdgpu.gttsize=126976` grep count `1`; all six
+  flags present verbatim.
+- `/var/log/dpkg.log` — **44** `upgrade` lines for the day, **zero** `conffile`
+  lines: no prompt was suppressed or silently auto-answered.
+- Router `localhost:9292/models` — `deepseek-v4-flash` + `gemma4-e4b`, both
+  `loaded`; `llama-router` container `Up 26 hours` (never restarted).
+- All 8 containers `Up`; `systemctl --user is-active llama-router
+  hermes-gateway` → `active active`; `workers.listener` still PID 511380.
+- `/var/run/reboot-required` absent; `apt list --upgradable` down to exactly the
+  5 phased packages.
+- ⚠️ Residual, accepted: PID 511380 still maps the pre-patch `libbz2`. Harmless
+  (it is not a network-facing bzip2 decoder); it will pick up the fix on its next
+  restart.
+
+---
+
 ## 2026-08-31 (later still) — `agent.reasoning_effort: high` removed; config back to overnight-era reasoning behaviour
 
 **Observed:** Dinesh asked whether the reasoning config had drifted from the

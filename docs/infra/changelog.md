@@ -26,6 +26,290 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-08-31 — Epa Q thinking-off-for-coding policy validated on real tasks
+
+**Observed:** the 2026-08-29 (later) entry below shipped a tiered reasoning
+policy — `task.kind == "coding"` routes to `custom:local-models-no-think`
+(thinking OFF) — but the A/B that justified it used single-turn, no-tool
+synthetic tasks. Real Epa Q coding tasks are multi-turn agentic loops against a
+repo with tool calls, the one category thinking had won in the counter-case, so
+the OFF default was unvalidated on the workload it actually serves. This is the
+real-task validation (2026-08-31, 2 days post-deploy).
+
+**Changed:** none (verification only). Confirmed `~/.hermes/config.yaml` still
+carries both `custom_providers` entries (`Local Models` thinking-on default,
+`Local Models No Think` with `extra_body.chat_template_kwargs.enable_thinking:
+false`) and `delegation.provider` still points at `opencode-zen` — nothing
+reverted. Executor routing code (`LOCAL_PROVIDER_NOTHINK`,
+`_hermes_session_factory`) unchanged. Also confirmed the executor toolset
+exclusion (`-t` without `delegation`) is in effect.
+
+**Expected:** thinking-off stays safe as the coding default if real multi-turn
+coding tasks complete at full quality with no visible reasoning.
+
+**Smoke test:** audited the three coding tasks that ran since deploy from
+`epaq.db` + their `.epaq/runs/task-*.log` transcripts:
+- #21 CivicSense v0 pipeline — completed, 246 tool calls, 0 reasoning blocks,
+  0 delegate_task.
+- #23 Epa Q state-machine — completed, 1290 tests pass, 0 reasoning blocks,
+  0 delegate_task.
+- #24 website redesign — completed (after retry-1 failed on a tool-iteration
+  limit at the delivery step, unrelated to thinking); both attempts show 0
+  reasoning blocks, 0 delegate_task.
+- Result: 3/3 coding tasks completed, 0 routing failures (no visible reasoning
+  on any kind=coding turn), 0 delegate_task attempts. Clean pass at the
+  2–3-task volume the "Still open" paragraph required. REQUIREMENTS.md §9.4
+  "Still open" updated to "Validated 2026-08-31".
+
+
+
+**Observed:** the 2026-08-26 evaluation (see that entry below) rejected this model as a DS4
+replacement and it was never integrated — no `models.ini` section, no systemd unit, no
+`swap-model.sh`/`watchdog.env` entry, the standalone :10098 eval container already torn down.
+Only its build/download artifacts remained on disk. User asked for it to be removed too,
+right after the `qwen3.8-27b-q4` decommission above.
+
+**Changed:**
+- Deleted the GGUF: `~/llama-stack/hf-cache/hub/models--unsloth--Qwen3.8-Flash-Next-GGUF/`
+  (88 GiB) plus `.locks/models--unsloth--Qwen3.8-Flash-Next-GGUF` and
+  `download-qwen38-flash-next.log`.
+- Deleted the eval build tree: `~/llama-stack/eval-qwen4exp/` (671 MiB) — the custom
+  `llama.cpp-qwen4exp` build (mainline + unmerged PR #27742) kept "for reference" per the
+  original evaluation note. SHA-pinned and the PR has since moved, so nothing here was going
+  to be reused; rebuildable from the public PR if ever needed again.
+- `docs/infra/current.md` — removed the `### Qwen3.8-Flash-Next` deep-dive subsection under
+  `## Models` (the full write-up already lives in the 2026-08-26 entry below, so nothing was
+  lost, only de-duplicated) and fixed two now-dangling cross-references to it (the top banner,
+  and the 2026-08-26 "Prior:" line). Also fixed a leftover stale paragraph found while in
+  there — the "hand-loaded Q4" note under "Residency is a runtime state" still described
+  hand-loading `qwen3.8-27b-q4` by keyboard, missed in the earlier decommission pass because
+  it didn't use the model's id literally, so a plain grep for the id didn't catch it.
+- Left untouched: this changelog's own 2026-08-26 entry (append-only history, not rewritten),
+  `bench/archive/**` files that coincidentally reuse port `:10098` from an unrelated 2026-08-06
+  eval, `~/.hermes/models_dev_cache.json` (an auto-refreshed cloud model catalog cache that
+  happens to list an unrelated cloud-hosted "Flash-Next" model), and
+  `observability/stack/mem-sampler/samples.jsonl` (append-only sample log).
+
+**Expected:** ~88.7 GiB of disk reclaimed; zero functional change (nothing here was ever live).
+
+**Smoke test:** `find ~/llama-stack -iname "*flash-next*"` returns nothing; `grep -rn
+"Qwen3.8-Flash-Next section\|section below" docs/infra/current.md` returns nothing (no
+dangling cross-refs); `df -h /` shows the reclaimed space.
+
+---
+
+## 2026-08-30 — `qwen3.8-27b-q4` fully decommissioned
+
+**Observed:** the last on-demand swap-target model (`qwen3.8-27b-q4`, evaluated 2026-08-19,
+rejected as a daily driver 2026-08-20 — faster per token but `parallel = 1` with reasoning
+always on, loses on real multi-caller work) had had zero real use since being left resident-
+on-demand. User asked for it and every reference removed to reclaim disk and simplify the
+stack ahead of further host-RAM headroom work.
+
+**Changed:**
+- `~/llama-stack/config/models.ini` (runtime, edited in place with `sed -i` to preserve the
+  inode the router container bind-mounts) and `~/Dev/strix-halo-llm-stack/config/models.ini`
+  (repo template) — removed the `[qwen3.8-27b-q4]` section (both copies, kept identical) and
+  fixed the DS4 section's stale comment referencing it, plus the model-discovery-mitigation
+  comment naming the `/models/qwen38` mount.
+- `~/.config/systemd/user/llama-router.service` — removed the `/models/qwen38` bind-mount and
+  fixed `Description=`. Required a `daemon-reload` + router restart (models.ini is parsed only
+  at startup); done at a quiet moment (`epaq_tasks` checked for none `running` first). Both
+  DS4 and gemma4-e4b confirmed `loaded` afterward via `/models`; `qwen3.8-27b-q4` no longer
+  appears at all (not even `unloaded`).
+- `~/observability/stack/llama-watchdog/watchdog.env` — `HEAVY_MODELS` trimmed to just
+  `deepseek-v4-flash` (was `qwen3.8-27b-q4,deepseek-v4-flash`).
+- `~/Dev/strix-halo-llm-stack/tools/swap-model.sh` — removed the `QWEN` variable, emptied
+  `HEAVY_OTHERS`, removed the `qwen)` case branch and its usage text. **Decision (asked and
+  confirmed): kept the script's general `ds4<->X` mechanism** rather than retiring it, for a
+  possible future on-demand model — only the qwen-specific parts were stripped. Kept in
+  lockstep with `watchdog.env` per the file's own cross-reference comment.
+- `~/Dev/automated-workflows/workers/overnight_swap.py` — the dormant `"qwen"` fallback branch
+  in `_swap_model` (unreachable in practice, no `swap_to_qwen()` method exists) now fails
+  clearly via `_fail()` instead of passing an unknown target string to a script that no longer
+  has a case for it. Stale docstrings/comments updated. `workers/overnight_tasks.py` comments
+  updated to match (this cron is already dormant, superseded by Epa Q — see
+  `docs/OVERNIGHT_JOBS.md`).
+- `~/.hermes/config.yaml` — removed `qwen3.8-27b-q4: {}` from **both** `custom_providers`
+  entries' `models:` maps (`Local Models` and `Local Models No Think`, the latter added
+  2026-08-29 for the reasoning-policy work — it had inherited the same stale entry).
+- Deleted `~/Dev/strix-halo-llm-stack/tools/bench-qwen38.sh` (already broken — targeted the
+  Q8_0 id deleted 2026-08-20) and `tools/end-qwen-trial.sh` (completed one-shot revert script
+  for the concluded 2026-08-20 trial).
+- Deleted the GGUF: `~/llama-stack/hf-cache/hub/models--unsloth--Qwen3.8-27B-GGUF/` (17.56 GiB)
+  plus its stray `.lock`/`.metadata`/`download-qwen38.log` siblings. Deleted outright, same
+  call as the rejected ds4fa evaluation's ~192 GiB (2026-08-29) — a public unsloth GGUF,
+  trivially re-downloadable if ever needed again. `Qwen3.8-Flash-Next` (a separate, unrelated,
+  already-rejected 2026-08-26 evaluation) left untouched.
+- `docs/infra/current.md` (banner, bind-mount list, Models table row, "Model swap"
+  residency-notes block, `custom_providers.models` list description) and
+  `~/.hermes/skills/ai-infra-state/SKILL.md` updated so neither keeps citing a removed model
+  as ground truth.
+- Left untouched as pure history: this changelog's own prior entries, `bench/archive/**`,
+  `docs/OVERNIGHT_JOBS.md` (already self-labeled "RETIRED"), all `*.bak-*` files, and every
+  reference to the older qwen3.6-35b/27b or qwen3.5-122b generations (retired 2026-08-15/17/20,
+  unrelated to this model).
+
+**Expected:** 17.56 GiB of disk reclaimed; no functional change to serving (DS4 + gemma4-e4b
+residency unchanged, no on-demand alternative existed in practice anyway); `swap-model.sh` and
+the watchdog mutex remain correct with an empty heavy-others list; a future on-demand model can
+be slotted back into the kept skeleton.
+
+**Refs:** two Explore-agent research passes this session mapped every reference on the box
+(not just the two repos) before editing, in dependency-safe order per the cross-file lockstep
+comments already present in `swap-model.sh`/`watchdog.env`.
+
+**Smoke test:** `curl -s localhost:9292/models` post-restart shows only `deepseek-v4-flash`
+and `gemma4-e4b`, both `loaded`; `diff` on both `models.ini` copies clean; `bash -n` on
+`swap-model.sh` clean; `python3 -c "import yaml; yaml.safe_load(...)"` on `config.yaml` clean;
+`grep -rn qwen3.8-27b-q4` across `~/llama-stack`, this repo, `automated-workflows`,
+`~/.hermes/config.yaml`, `~/.hermes/skills`, `~/observability`, and the router unit returns
+zero hits outside `.bak-*` files and this changelog's historical entries.
+
+---
+
+## 2026-08-29 (later) — Local ds4 reasoning policy: thinking OFF for Epa Q coding tasks, `delegation` moved off local ds4 to Zen
+
+**Observed:** Local `deepseek-v4-flash` (llama-router `:9292`) runs uncapped
+`xhigh` reasoning — no `reasoning-budget`, unlike every other model on the box.
+Measured whether that reasoning earns its cost on the executor's actual work
+(predominantly coding). It does not, and at the top of the range it is
+actively harmful.
+
+**A/B, same task both ways, 6 coding tasks, temp 0, `max_tokens` 16384.**
+Quality was executed against 6-12 assertions per task written before any
+output was seen, not eyeballed. ON and OFF ran back-to-back per task so
+background GPU load (Hindsight on gemma) hit both arms equally.
+
+| task | ON | OFF | speedup | quality |
+|---|---|---|---|---|
+| slugify | 10.6s / 184 tok | 2.8s / 51 tok | 3.8x | both PASS |
+| parse_duration | 49.8s / 918 tok | 11.0s / 208 tok | 4.5x | both PASS |
+| merge_intervals | 20.1s / 366 tok | 6.4s / 121 tok | 3.1x | both PASS |
+| flatten_dict | 28.4s / 519 tok | 9.4s / 178 tok | 3.0x | both PASS |
+| fix_dedupe_bug (debugging) | 43.5s / 798 tok | **3.1s / 56 tok** | **14.0x** | both PASS |
+| chunk_by_bytes | 36.1s / 664 tok | 10.7s / 202 tok | 3.4x | both PASS |
+| **total** | **188.5s / 3,449 tok** | **43.4s / 816 tok** | **4.3x** | **6/6 vs 6/6** |
+
+Zero quality difference, 4.3x faster, 4.2x fewer tokens. All arms finished
+`stop`. **Debugging — the task where deliberation seemed most likely to
+matter — was the largest OFF win**, not the smallest.
+
+**Counter-case, n=1:** an open-ended design task (worker-pool deadlock fix)
+went the other way. ON found the correct fix (inline execution when
+saturated); OFF produced 3x the text recommending a priority queue that does
+not address the failure (priority cannot help when zero workers are free; the
+expansion trigger never fires because the queue is empty during that
+deadlock). Judged by reading the code, not executed. **The discriminator is
+not domain** — a pure maths-deduction task was *cheaper* with thinking ON
+(31 tok vs 147 tok OFF), because the model reasons tersely in the thinking
+channel and verbosely in the output channel when it's closed:
+
+> Is the shape of the answer determined by the prompt, or must the model
+> decide what the answer should be?
+
+**🔴 `reasoning_effort: high`/`max` is catastrophic on this model.** At
+production's own `max_tokens: 32768`: 32,768 tokens, 138,359 chars of
+reasoning, **zero** output characters, 1,950s (32.5 min), `finish=length`.
+Reproduces the 2026-08-06 "consumed the whole budget in the reasoning
+channel, emitted zero content" failure at real settings. 22 days of router
+journal show 7 DS4 completions >=8,192 tokens, worst **65,536 tokens over
+7,114s (1h59m)**; the other six are 9,467-15,497 tokens (11-18 min) and were
+NOT re-examined for whether they were legitimate deep work or partial
+runaways — deliberately out of scope this round (see Open below).
+**`~/.hermes/config.yaml`'s `delegation:` block set exactly `reasoning_effort:
+high` on local DS4** with `max_iterations: 250` — the live mechanism, not a
+hypothetical.
+
+**Changed:**
+1. `~/.hermes/config.yaml` `custom_providers:` — added a sibling entry
+   `Local Models No Think` (same `base_url`/`model` as `Local Models`, `extra_body:
+   {chat_template_kwargs: {enable_thinking: false}}`). Multiple `custom_providers`
+   entries with the same `base_url`/`model` but different `name` resolve
+   independently by `--provider custom:<slug>` — proven by hermes's own
+   `tests/agent/test_custom_provider_extra_body.py`. Verified end-to-end: direct
+   API call and a live `hermes chat --provider custom:local-models-no-think`
+   both show `reasoning_content` empty and the reasoning moved into `content`.
+2. `~/Dev/automated-workflows/workers/epaq/executor.py` — `LOCAL_PROVIDER_NOTHINK`
+   added; `_assert_local_provider()` generalised to take a `provider` param
+   (still fails closed — §9.2 — for whichever entry a session actually uses);
+   `_HermesSubprocessSession` takes a `provider` arg; `_hermes_session_factory`
+   now takes `task` and routes `task.kind == "coding"` to the no-think provider,
+   everything else unchanged. `SessionFactory` type alias and both test-suite
+   lambda factories updated to the new 3-arg signature.
+3. `~/.hermes/config.yaml` `delegation:` — `provider: custom` + local `base_url`
+   -> `provider: opencode-zen` (matches the Epa Q orchestrator's own model,
+   `epa_q/REQUIREMENTS.md` §8). `reasoning_effort: high` removed (set to `''`,
+   its documented "inherit" default) rather than carried across providers with
+   no evidence it behaves the same on Zen's hosting.
+4. Same file, executor.py — `EXECUTOR_TOOLSETS_NO_DELEGATION` added and wired
+   into the `hermes chat -t` flag on every executor invocation (not just
+   coding tasks). Required because moving `delegation` to Zen means an executor
+   task (pinned local specifically for zero cost + "nothing leaves the box",
+   `epa_q/REQUIREMENTS.md` §8/§9.2) could otherwise `delegate_task` straight
+   past both guarantees. `-t` REPLACES the toolset list rather than subtracting
+   from it (`agent.disabled_toolsets`, the additive mechanism, is global config
+   only, no per-invocation CLI flag) — so the constant reproduces the exact
+   toolset set observed enabled in a live Epa Q transcript, minus `delegation`,
+   rather than being derived from `platform_toolsets.cli` (which is missing
+   `bfl`/`kanban`, seen enabled in practice by an untraced mechanism, and still
+   lists the already-inert `computer_use`). `delegate_task` was never actually
+   invoked in any of 12 observed Epa Q transcripts as of this date — this closes
+   a live capability, not an active leak.
+5. `epa_q/REQUIREMENTS.md` — new §9.4 "Reasoning policy" (the tier table and
+   full evidence); §8 records delegation's new target; §9.2 records the
+   executor toolset restriction; §10.6 updated — `delegate_task` is no longer a
+   local-ds4 contender, so the `ds4_lease` residual is just the two briefings.
+
+**Expected:** Epa Q coding tasks ~4x faster at unchanged quality; the
+32-minute/zero-output runaway removed from every local caller that used
+`reasoning_effort: high` (delegation); no change to pi, pi-kalam, or the
+default thinking-on behaviour for non-coding executor tasks.
+
+**Refs:** `hermes_cli/config.py:2020-2028` (`_VALID_CUSTOM_PROVIDER_FIELDS`,
+confirms `extra_body` is entry-level only, not inside `models:`);
+`hermes_cli/runtime_provider.py:822-853` (`_get_named_custom_provider`, name
+resolution independent of `base_url`); `agent/agent_init.py:429-489`
+(`_merge_custom_provider_extra_body`, reaches the wire via
+`agent/transports/chat_completions.py:700` as OpenAI SDK `extra_body=`);
+`hermes_cli/config_defaults.py:1972` (`delegation` schema defaults, confirms
+`reasoning_effort: ""` means inherit and `provider: ""` means inherit parent
+credentials -- explicit `opencode-zen` is an override, not accidental
+inheritance); `hermes_cli/oneshot.py:_validate_explicit_toolsets` (`-t`
+replace semantics); ds4fa's `pageable-access=0`/GTT-decomposition session
+earlier the same day for the broader ds4 investigation this grew out of.
+
+**Smoke test:** 1,249/1,249 tests pass in
+`~/Dev/automated-workflows/.venv` (`pytest tests/`), up from 1,248 baseline —
+the delta is a new drift-guard test
+(`test_executor_nothink_toolsets_matches_a_live_transcript`) that diffs
+`EXECUTOR_TOOLSETS_NO_DELEGATION` against a real Epa Q transcript's own
+"Enabled toolsets:" line and genuinely ran (not skipped) against
+`.epaq/runs/task-14.log`. New tests added, not just passing incidentally:
+`test_hermes_session_pins_nothink_provider_when_requested`,
+`test_session_factory_picks_provider_by_task_kind`,
+`test_a_remote_nothink_provider_also_aborts_before_any_process_starts`,
+`test_the_real_config_pins_the_nothink_provider_to_loopback_too` (this one
+against the LIVE `~/.hermes/config.yaml`, not a fixture), plus the toolset
+assertion added to the existing `test_hermes_session_pins_local_provider`.
+Both `~/.hermes/config.yaml` and `~/.hermes/config.yaml.bak-20260829-110206-reasoning-policy`
+(and matching `.bak-*` for `executor.py` / `REQUIREMENTS.md`) exist for rollback.
+No `models.ini` change, no router restart, `deepseek-v4-flash loaded` +
+`gemma4-e4b loaded` unaffected throughout.
+
+**Open / not done:** (a) Real-task validation — the A/B above is single-turn,
+no-tool-call tasks; real Epa Q tasks are multi-turn agentic loops against a
+repo where tool selection is itself a decision, the one category thinking won
+in the counter-case. Run 2-3 genuine queued coding tasks both ways before
+fully trusting the OFF default (`epa_q/REQUIREMENTS.md` §9.4). (b) Whether the
+six DS4 completions at 9,467-15,497 tokens (not the 65,536 outlier) were
+legitimate deep work or partial runaways was explicitly deferred this round —
+user declined a reasoning-budget investigation for now. (c) `task.kind` is
+coarse (a Gmail-API coding task was filed `general`) — tightening it at
+creation time widens the reasoning-policy benefit.
+
+---
+
 ## 2026-08-29 — ds4fa engine REJECTED; Q2-vs-Q3 quant question SETTLED with measurements. No production change.
 
 **Observed:** User read that DeepSeek-V4-Flash runs better at a Q2 quant than the UD-IQ3_XXS we serve, and directed a full engine evaluation of `julianmb/ds4fa` (a fork of `antirez/ds4`, NOT llama.cpp) advertising **32 tok/s decode**. Prod was taken down for the window (user ran `systemctl --user stop llama-watchdog llama-router` at 06:34; the watchdog MUST be stopped, not just the router — `watchdog.py` probes with real inference and deliberately relies on router autoload, so an eviction alone produces a flap, not a free box).

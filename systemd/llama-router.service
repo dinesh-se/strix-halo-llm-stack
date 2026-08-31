@@ -67,7 +67,6 @@ ExecStart=/usr/bin/docker run --rm --name llama-router \
   -e LLAMA_CACHE=/models/empty \
   -v /home/YOUR_USER/llama-stack/hf-cache/models--unsloth--DeepSeek-V4-Flash-0731-GGUF:/models/ds4:ro \
   -v /home/YOUR_USER/llama-stack/hf-cache/hub/models--unsloth--gemma-4-E4B-it-qat-GGUF:/models/aux:ro \
-  -v /home/YOUR_USER/llama-stack/hf-cache-archive/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF:/models/qwen:ro \
   -v /home/YOUR_USER/llama-stack/empty-cache:/models/empty:rw \
   -v /home/YOUR_USER/llama-stack/config/models.ini:/models.ini:ro \
   --entrypoint /usr/bin/llama-server \

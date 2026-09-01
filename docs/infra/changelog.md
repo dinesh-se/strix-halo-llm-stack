@@ -71,6 +71,16 @@ API — no config fixes it.
 **Expected:** No behaviour change to the running system — this is a measured capability
 now available on demand, not a deployment.
 
+🔴 **CORRECTION, same session.** The table above under-rated camofox because the A/B
+waited **6 s** and scored on character count. Re-run at **20 s**: Kayak returns
+**80,427 chars** of populated results with real fares (`Cheapest €15`, `16:50-19:45
+DUB->ORY direct 1h 55m`, Aer Lingus / Air France / Transavia rows) and Daft.ie returns
+**47 listings** (`€2,190 per month · 1 Bed · 1 Bath · Apartment`). **The wins are
+extractable data, not just pages that load** — and my earlier "live flight prices need an
+API" conclusion does NOT hold for Kayak-class aggregators. Lesson: on a JS results page,
+budget 15-20 s and assert on the DATA, never on response size. ⚠️ Snapshots paginate at
+80,000 chars, so a large result set is truncated rather than complete.
+
 **Refs:** `tools/browser_camofox.py`; `scripts/install.sh:3176`
 (`@askjo/camofox-browser@^1.5.2`); github.com/jo-inc/camofox-browser (the Docker image
 `jo-inc/camofox-browser` in the docstring is **not publicly pullable** — returns

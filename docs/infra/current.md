@@ -369,7 +369,7 @@ the single most-checked automation tell — and leaks real host specs
 
 | target | chromium | camofox | winner |
 |---|---|---|---|
-| Kayak | redirected to `/help/bots.html` | reached results page (15,941 ch) | **camofox** |
+| Kayak | redirected to `/help/bots.html` | **real fares** — `Cheapest €15`, `16:50-19:45 DUB->ORY direct 1h 55m` | **camofox** |
 | Daft.ie | 459 ch (nothing) | 16,051 ch | **camofox (35x)** |
 | Indeed.ie | 856 ch, `Blocked` | 15,636 ch, clean | **camofox** |
 | Aer Lingus | 600 ch stub | 2,760 ch, reached `/app/make/…` | camofox (still no prices) |
@@ -379,6 +379,11 @@ the single most-checked automation tell — and leaks real host specs
 | Google Flights | consent wall | consent wall | neither — that is EU cookie consent, not bot detection |
 
 **Verdict: 4 wins, 1 loss, 2 ties, 1 mutual loss — a real but NOT universal upgrade.**
+✅ **The wins are extractable data, not just a page that loads** — Kayak returns fares and
+itineraries; Daft.ie returns **47 listings** at `€2,190 per month · 1 Bed · 1 Bath`.
+🔴 **Wait 15-20 s on a JS results page and assert on the DATA, not char count.** The first
+A/B waited 6 s and scored Kayak "loaded but no prices"; at 20 s the same page gave
+**80,427 chars** of populated results. ⚠️ Snapshots paginate at 80,000 chars.
 🔴 **LinkedIn is the counter-example that kills "just make camofox the default"** — keep
 both and pick per target. Camofox beats *fingerprint*-based defense; it does nothing for
 IP reputation, so commercial-grade WAFs (PerimeterX/DataDome) still win — that needs a

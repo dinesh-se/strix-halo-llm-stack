@@ -337,6 +337,35 @@ the changelog entry for 2026-09-01; the previous container is parked stopped as
 ⚠️ `web_extract_tool` takes a **list** of URLs — pass a bare string and it iterates
 per-character, rejecting each as a private-network address.
 
+**Version: `v2.11.272`, updated 2026-09-01** (was upstream `3afe6df1f` of 2026-05-08, 812
+commits behind). `~/firecrawl` is on branch `upgrade-2.11.272` = the tag plus **one** local
+commit. Rollback: images `firecrawl-*:rollback-20260901`, branch `main`, and
+`*.bak-20260901-pre-v2.11.272` (delete from ~2026-09-15).
+
+- 🔴 **The compose file hard-codes `name: firecrawl`.** A second copy in another directory
+  is the *same compose project* and will fight prod for containers. Any off-prod test
+  **must** pass `-p <other-name>` and a different `PORT`.
+- **Only one local delta remains:** `- "127.0.0.1:${PORT:-3002}:${INTERNAL_PORT:-3002}"`.
+  Upstream now omits `restart:` (default `no`, which is what socket activation needs) and
+  dropped the `ai-stack` network, so those two edits are retired — do not re-add them.
+- **FoundationDB is parked behind `profiles: ["fdb"]`.** Upstream ships it as an optional
+  queue backend; `NUQ_BACKEND` is unset here so the Postgres queue is used and the two fdb
+  containers never start. Do not delete the block — the profile gate is the merge-friendly
+  form.
+- **Updating means a source build.** ghcr has `firecrawl` + `playwright-service` images but
+  **`latest` only, no version tags**, and upstream's own first rule is "Release: an exact
+  tag". Cold start is now **16.3 s** (was 12.2 s); images grew to 1.08 GB / 2.08 GB.
+- ⚠️ Two startup log lines are **normal, not faults**: a RabbitMQ `noproc` error that
+  self-heals to the Postgres fallback, and `Can't accept connection due to RAM/CPU load`
+  from Firecrawl's load guard. Neither failed a scrape.
+- **Scraping is still Playwright → Chromium** (`apps/playwright-service-ts/api.ts`). The
+  v2 API now has a `/browser` route, but it is a thin client requiring `BROWSER_SERVICE_URL`
+  and errors with "Browser feature is not configured" when unset — **Firecrawl does not
+  bundle a browser that replaces Chromium.** `fire-engine` is in the tree but is the closed
+  cloud component.
+- Firecrawl also reads `SEARXNG_ENDPOINT` for its own `/v2/search`. **Not set** — Hermes
+  uses `search_backend: searxng` directly, so Firecrawl only ever does `/v2/scrape` here.
+
 **Browser** = built-in `browser_*` tools -> `agent-browser` (npx, 0.26.0) -> local Chromium.
 🔴 **`browser.backend: off` is REQUIRED and is now set in both profiles.** Unset defaults to
 Browser Use CLI (`browser_exec`), which **cannot run headless**: it blocks on a GUI Chrome

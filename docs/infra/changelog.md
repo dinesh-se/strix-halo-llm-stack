@@ -26,6 +26,70 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-09-01 (later+6) — Firecrawl 2026-05-08 -> v2.11.272 (812 commits); FoundationDB parked, two local deltas retired
+
+**Observed:** Firecrawl's checkout was pinned at upstream `3afe6df1f` (2026-05-08) with
+images built ~3 months ago — the same staleness class as the SearXNG `2026.5.8` image that
+was silently serving unrelated results earlier today. Unlike SearXNG it was **not** broken:
+a pre-change smoke test scraped a JS-rendered page correctly in 12.2 s cold. 812 commits
+behind `v2.11.272`. The rationale for updating was decay risk in a scraper, not a fault.
+
+**Changed:**
+- `~/firecrawl` moved from local branch `main` to `upgrade-2.11.272` (tag `v2.11.272` +
+  one local commit `7c4d1706c`). Images rebuilt from that tree.
+- **Only one of the three local deltas survived:** the `127.0.0.1:${PORT}` publish (the
+  2026-08-25 no-auth fix). Upstream now omits `restart:` entirely — the Docker default is
+  `no`, which is exactly what `firecrawl-proxy` socket activation requires — and the dead
+  `ai-stack` network is gone, so both of those local edits were dropped as redundant.
+- Upstream's compose adds an optional **FoundationDB** queue backend (2 services + 2
+  volumes). `NUQ_BACKEND` is unset here (Postgres queue), so both services were gated
+  behind `profiles: ["fdb"]` rather than deleted — `docker compose up -d` skips them, and
+  the block survives future merges. The api's `fdb-cluster-file:/var/fdb:ro` mount is
+  harmless with the services off (`FDB_CLUSTER_FILE` is `${NUQ_BACKEND:+...}` = empty).
+- Rollback kept: `firecrawl-{api,playwright-service,nuq-postgres}:rollback-20260901`
+  (distinct image IDs), plus `docker-compose.yaml.bak-` / `.env.bak-20260901-pre-v2.11.272`
+  and branch `main`. Delete from ~2026-09-15 if stable.
+
+**Expected:** 4 months of scraper/extraction fixes, with no change to the `/v2/scrape`
+contract that `extract_backend: firecrawl` depends on. No consumer edits: both Hermes
+profiles point at `http://localhost:3002`, which the socket proxy keeps stable.
+
+**Refs:** upstream `SELF_HOST.md` at v2.11.272 ("Release: an exact tag"; FoundationDB is
+opt-in via `NUQ_BACKEND`; Fire-engine optional). Note ghcr publishes `firecrawl` and
+`playwright-service` images but **`latest` only** — no version tags — so a pinned release
+requires a source build.
+
+**Smoke test:** built off-prod in a git worktree as project `firecrawl-next` on `:3013`
+(upstream hard-codes `name: firecrawl` in the compose file, so the project name **must** be
+overridden or the test collides with prod). A/B harness asserting on a **marker string per
+target**, never on response size:
+
+```
+                              old :3002        new :3013
+js-render  quotes.toscrape   PASS 1,574 ch    PASS 1,574 ch
+static     example.com       PASS   180 ch    PASS   180 ch
+wikipedia  /wiki/Dublin      PASS           PASS   (see note)
+real-site  news.ycombinator  PASS 18,023 ch   PASS 18,023 ch
+docs       python.org        PASS 2,210 ch    PASS 2,210 ch
+==> 10/10 PASS, 0 regressions
+```
+
+⚠️ The first run showed Wikipedia at 310,100 ch old vs 461,542 ch new, which looked like
+an extraction improvement. **It was run-to-run variance, not a difference** — a re-run gave
+306,692 vs 310,100 with an identical 6.0% duplicate-line ratio. Recorded because the
+tempting read (a 50% content gain) was wrong.
+
+Post-promotion, through the socket on `:3002`: **5/5 PASS**, cold start **16.3 s**
+(was 12.2 s — the api image grew 886 MB -> 1.08 GB, playwright 1.34 GB -> 2.08 GB).
+Running container confirmed on image `960e6566f72c`.
+
+⚠️ New api logs two startup warnings that are **not** faults: a RabbitMQ `noproc` error
+that self-heals by falling back to Postgres, and `Can't accept connection due to RAM/CPU
+load` from Firecrawl's own load guard (MemAvailable was ~2.5 GiB with both stacks up). No
+scrape failed under it.
+
+---
+
 ## 2026-09-01 (later+5) — Camofox evaluated: beats fingerprint defenses, loses to IP reputation; installed, NOT wired in
 
 **Observed:** After establishing that the browser tier cannot reach bot-defended sites

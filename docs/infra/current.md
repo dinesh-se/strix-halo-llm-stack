@@ -1,6 +1,22 @@
 # AI Infra — Current State
 
-> **Last verified:** 2026-08-31 (later) — **compression split by route.** Hermes'
+> **Last verified:** 2026-09-01 — **the research/scrape layer, end to end.** Two components
+> were 4 months stale; one was silently broken, the other was not.
+> **SearXNG** served coherent-looking results for *unrelated* queries at HTTP 200 with an
+> empty `unresponsive_engines` — two stacked faults (a `2026.5.8` image on which google
+> returned 0 results silently, plus a broken bing scraper that a prior session had enabled to
+> compensate). Now image **`2026.9.1`**, bing **disabled**, google+brave answering: relevance
+> **36.7% -> 98.9%** by `docs/infra/scripts/searxng-relevance.py`. 🔴 **`unresponsive_engines`
+> is NOT a health check** — it was empty for both the silent-zero and the confident-garbage
+> failure. **Firecrawl** was 812 commits behind (base 2026-05-08) but **not** broken; updated
+> to **`v2.11.272`** as decay control, A/B'd off-prod 10/10 before promotion, 5/5 after.
+> **Camofox** evaluated and installed but deliberately **NOT wired in** (4W-1L-2T over 8 real
+> targets; it beats fingerprint checks, loses to commercial WAFs, and returns *less* than
+> plain Chromium on LinkedIn). Browser backend forced `off` in both profiles. Serving layer
+> **UNCHANGED** — no `models.ini` / router / model edit; DS4 + gemma4-e4b still the only two
+> models, both resident.
+>
+> Prior: 2026-08-31 (later) — **compression split by route.** Hermes'
 > summarizer was `gemma4-e4b` for EVERY session including the CLOUD Zen one, and gemma's
 > 131,072 window is smaller than the 196,608 trigger it was fed (cause of the 6 gemma
 > `Context size has been exceeded` errors on 08-30). Now: new **`~/.hermes-epaq`** profile

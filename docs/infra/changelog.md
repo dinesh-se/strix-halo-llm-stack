@@ -26,6 +26,382 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-09-01 (later+3) — Epa Q: periodic checkpoint RE-ADDED; accidental `hermes update` cost task #34 4h25m
+
+**Observed:** A shell-quoting error of mine ran `hermes update` unintentionally — I wrote
+`` `hermes update` `` inside a double-quoted `echo`, and backticks are command substitution.
+It upgraded Hermes **v0.20.6 → v0.21.0** (also cua-driver 0.22.2 → 0.23.2, hindsight-client,
+certifi/packaging downgrades) and began draining the gateway to restart it. I killed the
+update process at 13:16, but **systemd restarted the gateway anyway at 13:24:29**
+(MainPID 1768559 → 2192868); my intervention did not avert it.
+
+🔴 **Epa Q tasks are gateway DESCENDANTS** (`task → run_epaq_dispatch.py →
+run_epaq_dispatch.sh → hermes gateway run`), because Epa Q's cron is Hermes cron, not
+crontab. So any gateway restart kills the in-flight task. Task #34 (finance ledger, running
+since 09:45) died at 13:24 having done **~4h25m** of DS4 work, leaving a zombie row:
+`state=running` with no live process, the ds4 lease still held, and **`checkpoint` NULL**.
+Five tasks (35–39) were blocked behind it; `_reap` would not have freed them until ~15:10
+(its `orphan_after` is 2 h from `last_progress_at`). Every dispatch tick in between logged
+`{"skipped": "task-running"}`.
+
+🔴 **Checkpointing was HALF-BUILT and `current.md` said otherwise.** The `checkpoint`
+column, `store.save_checkpoint()`, and `_build_prompt`'s `RESUMING` block all existed —
+but `grep save_checkpoint` found callers **only in tests**. The writer went out with the
+lease/pause hand-off in `1114e1b` (2026-08-28); reader and storage were left behind.
+Meanwhile `current.md` still described the executor as able to "checkpoint and yield the
+slot" and "resume from its checkpoint" — contradicting its own later line saying the
+hand-off was deleted. Dinesh reasonably believed checkpointing worked because the SSoT
+said so.
+
+**Changed:**
+- `epaq.db`: task #34 manually reaped at Dinesh's request via the dispatcher's own
+  `store.recover()` + `store.lease_release()` (not hand-written SQL) — the same calls
+  `_reap` would have made, so no retry attempt consumed and no backoff. Queue unblocked
+  ~70 min early; the 13:00:30Z tick restarted #34 on `custom:local-models` (fail-closed
+  provider assertion held). Backup: `epaq.db.bak-20260901-1351-pre-manual-reap`.
+- `workers/epaq/executor.py`: **periodic checkpoint writer.**
+  `DEFAULT_CHECKPOINT_INTERVAL = 300.0`, `CHECKPOINT_TAIL_CHARS = 4000`, ctor kwarg
+  `checkpoint_interval` (`0` disables), `_safe_save_checkpoint()` swallows+logs errors.
+  Deliberately **write-only**: it persists a tail of the child's stdout on a timer and
+  never pauses, requeues or interrupts, so it cannot reproduce the 2026-08-28 supervisor
+  harm (which came from interfering with healthy runs, not from persisting state).
+- `workers/epaq/store.py`: **`recover()` now PRESERVES `checkpoint`** (it cleared it).
+  `recover` is the killed-runner path — exactly what a checkpoint is for — so clearing it
+  there sent every reaped task to a cold start. `record_failure()` still clears.
+- `current.md`: removed the stale pause/checkpoint/resume wording from the `ds4_lease`
+  bullet and documented the re-added writer.
+
+**Expected:** A killed runner now costs ≤5 min of work instead of the whole run, and a
+reaped task resumes from its checkpoint rather than cold-starting.
+
+**Smoke test:**
+- `pytest -k epaq` -> **301 passed**. Three new tests: the writer actually fires during a
+  run (regression guard naming this incident, since the feature previously shipped with a
+  reader and no writer); a store failure does not kill the run; `interval=0` disables it.
+  One existing assertion deliberately flipped: `test_recover_...` now asserts the
+  checkpoint is **preserved**, not cleared. ✅
+- Post-manual-update (Dinesh re-ran `hermes update` himself at 14:00): gateway on v0.21.0,
+  code v0.21.0 — consistent; `import hindsight_api` ok; **no dangling npm symlinks and the
+  global `agent-browser` was NOT reinstalled** (confirms the earlier prediction against a
+  real update); `browser.backend: off` survived in both profiles; doctor `✓ browser`,
+  `✓ web search`, `✓ web extract` in both; headless search+extract+browser all pass. ✅
+- Task #34 survived that second restart only by timing — the dispatch tick started it at
+  14:00:30, twelve seconds *after* the 14:00:18 restart, so it parented to the new gateway.
+
+**Open / structural:** any `hermes update` (or gateway restart) while a task is running
+still kills it — checkpointing now bounds the loss to ~5 min rather than preventing it.
+A pre-update guard ("refuse if `epaq_tasks` has a `running` row") is the obvious next step;
+not built, Dinesh's call.
+
+---
+
+## 2026-09-01 (later+2) — WORKING SETUP: SearXNG search fixed (bing), browser backend forced off Browser Use
+
+**Observed:** Dinesh cut through the option sprawl: he needs (1) search+extract for research
+and (2) headless browser automation, and asked for tested answers rather than analysis.
+Testing each option end-to-end found **two real faults, both of which explain the original
+"my agent can't research anything" complaint**:
+
+1. 🔴 **SearXNG returned ZERO results for every real query, silently** —
+   `{"success": true, "data": {"web": []}}`. SearXNG itself was healthy; its *engines*
+   were not. `unresponsive_engines` showed `brave: Suspended: too many requests`,
+   `duckduckgo: CAPTCHA`, `karmasearch: Suspended: access denied`,
+   `startpage: Suspended: CAPTCHA`. Every enabled general engine was blocked, and **bing
+   was `disabled: true`** in `~/.searxng/settings.yml`. Hermes' adapter is not at fault —
+   it faithfully reports an empty upstream. **A caller sees success, not an error.**
+2. 🔴 **`browser_exec` (Browser Use CLI) CANNOT run headless.** It is the DEFAULT when
+   `browser.backend` is unset, and it hides the entire built-in `browser_*` surface. Test
+   with `DISPLAY`/`WAYLAND_DISPLAY` unset returned:
+   `browser-harness: Chrome is asking "Allow remote debugging?" — click Allow to continue.`
+   / `permission-blocked: wait for the user to click Allow in the Chrome permission popup`.
+   It requires a GUI **and a human click** — the exact opposite of the requirement. Also
+   slow: `uvx browser-use` spent >4 min resolving on first run.
+
+**Changed:**
+- `~/.searxng/settings.yml`: `bing` `disabled: true` -> `false`; `mojeek` likewise (kept —
+  returns 0 today but is an independent index that may recover, and adds no measurable
+  latency). Root-owned file, edited via `docker run -u 0` bind mount (no passwordless
+  sudo). Backup alongside. `docker restart searxng` x2.
+- `~/.hermes/config.yaml` **and** `~/.hermes-epaq/config.yaml`: added `browser.backend: off`
+  with an inline comment explaining why, so the built-in `browser_*` tools (agent-browser +
+  local Chromium) are what the model gets. Backups written for both.
+
+**Expected:** Research works again (search returns real results; extract already did), and
+the agent gets a browser that runs headless with no display and no human in the loop.
+
+**Smoke test (all with `DISPLAY`/`WAYLAND_DISPLAY` UNSET):**
+- Engine sweep before the fix: `bing 10`, `github 30`, everything else `0`
+  (google/qwant/startpage/duckduckgo enabled-but-CAPTCHA'd, mojeek disabled). ✅
+- After enabling bing, via Hermes' own `SearXNGWebSearchProvider`:
+  `'Ryanair cabin baggage size'` -> ryanair.com, help.ryanair.com/Bag-Rules, kayak;
+  `'Dublin Swords bus fare 2026'` -> omio, wikipedia, rome2rio. **Real, relevant results.** ✅
+- Search latency 0.29 / 0.52 / 0.86 s. ✅
+- `web_extract` (Firecrawl self-hosted) -> clean markdown. ✅ (was never broken; note it
+  takes a **list** of URLs — a bare string is iterated per-character and every char is
+  rejected as a private-network address.)
+- `browser_navigate` + `browser_snapshot` headless -> `success: true`, title
+  `Example Domain`, 2 elements. ✅
+- `check_browser_requirements()` **True** in both profiles (was False);
+  `hermes doctor` -> `✓ browser`, `✓ web search (searxng)`, `✓ web extract (firecrawl)` in
+  both. Remaining `⚠ browser-cdp` (needs a CDP endpoint, N/A locally) and `⚠ browser-use`
+  (now intentionally off) are correct. ✅
+- agent-browser daemons self-reaped via `browser.inactivity_timeout: 120`; no orphans. ✅
+
+**Refs:** `plugins/web/searxng/provider.py`; `tools/browser_use_cli.py::is_browser_use_cli_mode`;
+`tools/browser_tool.py::check_browser_requirements`.
+
+**Open:** the gateway (`hermes-gateway.service`, up 24h) was NOT restarted — it picks up
+`browser.backend` on new sessions. Restart if interactive sessions still show `browser_exec`.
+
+---
+
+## 2026-09-01 (later+1) — `hermes update` is safe; and the built-in browser tools were never model-visible
+
+**Observed:** Dinesh asked whether a future `hermes update` would reinstall anything
+browser-related, then suggested checking `hermes doctor`. Both answers turned out to
+matter more than expected.
+
+**1. `hermes update` will NOT undo the uninstall.** `hermes_cli/update_cmd.py::_update_node_dependencies()`
+calls `tools.browser_tool.warm_agent_browser_npx_cache()`, which runs
+`npx --ignore-scripts --prefer-offline -y agent-browser@^0.26.0`. That populates
+`~/.npm/_npx` only — no global package, no bin symlink — and `--ignore-scripts` means the
+postinstall that created the original bad symlink **cannot execute**. agent-browser is not
+in `package.json`/`package-lock.json` (0 hits), so the npm install step cannot pull it
+either. `install.sh`'s `ensure_browser()` stopped npm-installing agent-browser (PR #44772,
+asserted by `tests/test_install_sh_browser_install.py`) and is an installer path `hermes
+update` never calls — so `@askjo/camofox-browser` (absent here) also stays absent.
+
+**2. 🔴 The built-in `browser_*` tools have never been visible to the model on this box.**
+`hermes doctor` reports `⚠ browser (system dependency not met)` and `⚠ browser-cdp`.
+Tracing `check_browser_requirements()` gate by gate:
+```
+_is_browser_use_cli_mode : True   <-- FIRST GATE, returns False immediately
+_is_camofox_mode         : False
+_get_cdp_override_raw    : ''
+_find_agent_browser(F)   : 'npx agent-browser'
+_get_cloud_provider      : None
+_chromium_installed      : True
+==> check_browser_requirements: False
+```
+`tools/browser_use_cli.py::is_browser_use_cli_mode()`: *"Browser Use mode is the DEFAULT:
+an unset `browser.backend` ("") enables it whenever the browser-use CLI is runnable."*
+`browser.backend` is unset in both profiles and `_find_cli()` -> `['~/.hermes/bin/uvx',
+'browser-use']`, so Browser Use mode is active and the entire `browser_*` surface is
+**deliberately hidden**; the model gets `browser_exec` (Browser Use CLI 3.0) instead. The
+doctor warnings are intentional suppression, not a fault — the run still ends "All checks
+passed" with `✓ browser-use`.
+
+🔴 **Method error worth keeping:** the earlier "native toolset functional test" called
+`browser_navigate()` directly in Python, which **bypasses the availability gate**. It
+proved agent-browser + Chromium work; it did **not** prove the model can browse. Model-facing
+availability must be checked with `check_browser_requirements()` or `hermes doctor`, never
+a direct import. Two conclusions in this changelog were drawn from that flawed test.
+
+**Changed:** documentation only — `current.md` §Browser automation extended with both
+findings. No config or package changes.
+
+**Refs:** `hermes_cli/update_cmd.py::_update_node_dependencies`;
+`tools/browser_tool.py::warm_agent_browser_npx_cache`, `check_browser_requirements`;
+`tools/browser_use_cli.py::is_browser_use_cli_mode`;
+`tests/test_install_sh_browser_install.py::test_ensure_browser_no_longer_npm_installs_agent_browser`.
+
+**Smoke test:** `hermes doctor` under `HERMES_HOME=~/.hermes-epaq` -> `✓ agent-browser
+(resolves via npx on first use)`, `✓ Playwright Chromium`, `✓ browser-use`, `⚠ browser`,
+`⚠ browser-cdp`, "All checks passed". Gate-by-gate trace above run against the live config. ✅
+
+**Open:** decide whether to set `browser.backend: off` to get the built-in `browser_*`
+tools back (they are the ones the Tier A design assumed), or keep the `browser_exec`
+default. Note `browser_exec` runs via **uvx** — a runtime package fetch outside the pinned
+npm graph — which is worth weighing against the security posture. Unresolved; no change made.
+
+---
+
+## 2026-09-01 (later) — CORRECTION: browser toolset was never broken; `browse-public` removed, symlink cleaned
+
+**Observed:** The earlier entry today claimed Hermes' native `browser` toolset had been
+"dead since 2026-08-30" because `~/.npm-global/bin/agent-browser` dangles. **That claim
+was WRONG and is retracted.** Reading `hermes_constants.agent_browser_runnable()` shows
+the dangling symlink is a *documented upstream issue (#48521)* that Hermes explicitly
+guards: it execs `--version` instead of trusting `shutil.which`, so a dead candidate falls
+through the chain (PATH -> extended PATH -> `node_modules/.bin` -> **npx**). Verified live:
+`_find_agent_browser()` returned `'npx agent-browser'`, and
+`npx -y 'agent-browser@^0.26.0' --version` -> `agent-browser 0.26.0`. Browsing worked the
+whole time.
+
+Also: **Hermes' own docs settle the toolset-vs-MCP question.**
+`guides/use-mcp-with-hermes.md` — *"Do not use MCP when a built-in Hermes tool already
+solves the job well."* Browsing is built in. The `browse-public` MCP server added earlier
+today was therefore the non-recommended path for a job the native toolset already does.
+
+**Changed:**
+- **Removed the `browse-public` MCP server** from `~/.hermes-epaq/config.yaml` by editing
+  the `mcp_servers:` block out directly — *not* via `hermes mcp remove`, which
+  YAML-round-trips and strips comments (it ate the "NO cloud fallback" rationale comment
+  earlier today; restored by hand, now carrying its own warning).
+- **Deleted the dangling symlink** `~/.npm-global/bin/agent-browser`. Resolution is now
+  cleanly `npx agent-browser` with Hermes owning the version via `AGENT_BROWSER_NPX_SPEC`.
+- `current.md` §Browser automation rewritten to match.
+- **Kept** the Tier B scaffold at `~/.config/epaq-browser/` (launch.sh/login.sh/portals/,
+  pinned chrome-devtools-mcp 1.8.0). Nothing registered with Hermes.
+
+**Expected:** One browser path for public work — the supported, Hermes-native one. MCP
+held in reserve for the single case the native stack genuinely cannot cover: a **logged-in**
+profile needing an egress allowlist. `--allowedUrlPattern` is implemented by
+chrome-devtools-mcp via CDP interception, **not** a Chrome flag, so `browser.cdp_url`
+would not provide it — that is the whole justification for keeping the scaffold.
+
+**Refs:** `hermes_constants.py::agent_browser_runnable` (issue #48521);
+`tools/browser_tool.py::AGENT_BROWSER_NPX_SPEC`, `_find_agent_browser`;
+`website/docs/guides/use-mcp-with-hermes.md`;
+`website/docs/developer-guide/browser-provider-plugin.md`.
+
+**Smoke test:**
+- `_find_agent_browser()` -> `'npx agent-browser'` before AND after symlink removal. ✅
+- `npx --ignore-scripts --prefer-offline -y 'agent-browser@^0.26.0' --version` -> `0.26.0`. ✅
+- **Native toolset functional test, no model slot consumed** (Epa Q task #34 was mid-run,
+  so this deliberately avoided a second DS4 session): direct Python call to
+  `browser_navigate('https://example.com/')` -> `{"success": true, "title": "Example
+  Domain", "stealth_features": ["local"], "element_count": 2}` plus a11y snapshot with
+  refs; `browser_snapshot()` -> same. ✅ **The native browser stack works.**
+- `hermes mcp list` under `HERMES_HOME=~/.hermes-epaq` -> "No MCP servers configured". ✅
+- Comment block preserved at config head after the hand edit; `_assert_local_provider()`
+  still passes. ✅
+- Dangling-symlink sweep of `~/.npm-global/bin/` -> none remaining. ✅
+
+**Follow-up (same session) — stale global package UNINSTALLED:**
+`npm uninstall -g --ignore-scripts agent-browser` removed `agent-browser@0.27.0`
+(73 MB of multi-platform binaries) from `~/.npm-global/lib/node_modules/`. `--ignore-scripts`
+deliberately: agent-browser's own postinstall is what created the bad global symlink in the
+first place. **This removes the trap** — with no global package there is nothing for a
+future postinstall to re-point, and no spec-violating 0.27.0 for
+`agent_browser_runnable()` to accept (it validates only that `--version` exits 0, never
+the version against `^0.26.0`).
+- Pre-checked that npx has its own cached copy — `~/.npm/_npx/ad6c181e5b604bdb/node_modules/agent-browser`
+  is **0.26.0** — so removal could not strand resolution on a network fetch.
+  (An unrelated 0.34.0 sits in a different npx slot from some other invocation.)
+- Post-uninstall verification: `_find_agent_browser()` -> `'npx agent-browser'`;
+  `npx -y 'agent-browser@^0.26.0' --version` -> `0.26.0`; **functional test passed** —
+  `browser_navigate('https://example.com/')` -> `{"success": true, "title": "Example
+  Domain", "stealth_features": ["local"]}` + a11y snapshot, `browser_snapshot()` -> same.
+  Ran without a model slot (Epa Q task #34 still mid-run). ✅
+- `npm ls -g` clean, no `agent-browser` bin, dangling-symlink sweep clean, no orphaned
+  chromium processes.
+
+**Open / not done:**
+- No Tier B portal registered — still needs a target portal.
+- `browser` toolset still enabled in BOTH profiles (never disabled; correct, given the
+  above).
+
+---
+
+## 2026-09-01 — Chrome DevTools MCP for Epa Q, trust-tiered; native `browser` toolset found BROKEN
+
+> 🔴 **PARTIALLY RETRACTED — see the `2026-09-01 (later)` entry above.** The "native
+> `browser` toolset is BROKEN / dead since 2026-08-30" claim in this entry is **wrong**.
+> The dangling symlink is real, but Hermes guards it (issue #48521) and falls back to npx;
+> browsing never stopped working. The `browse-public` MCP server described here has since
+> been **removed**. The chrome-devtools-mcp findings, egress-allowlist verification, and
+> gotchas below remain accurate and still apply to the retained Tier B scaffold.
+
+**Observed:** Dinesh reported repeated failures automating price/ticket research
+(Chrome+CDP, camoufox). While wiring a replacement, two things surfaced:
+
+1. 🔴 **`agent-browser` — the backend of Hermes' native `browser` toolset — has a
+   DANGLING GLOBAL SYMLINK.** `~/.npm-global/bin/agent-browser` (created 2026-08-09)
+   points at `~/hermes-agent/node_modules/agent-browser/bin/agent-browser-linux-x64`,
+   and **that package directory no longer exists**. `node_modules` mtime is
+   **2026-08-30 16:23**, matching `~/.hermes/.npm_lock_hash_5d57621f35d6` — i.e. the
+   2026-08-30 `hermes update` rebuilt node_modules and dropped the package, leaving the
+   symlink dangling. Every `browser_*` tool call has failed since. `browser` is in the
+   toolset list Epa Q passes (`-t bfl,browser,...`), so queued tasks needing a browser
+   have had a broken tool the whole time. **Same failure class as the 2026-08-01
+   Hindsight outage** (venv rebuild stripped `hindsight-all`) — now on the npm side.
+   Playwright's Chromium *is* still present (`~/.cache/ms-playwright/chromium-1234`);
+   only the CLI shim is gone.
+2. ⚠️ `tools/browser_tool.py` supports **cloud backends** (Browser Use — "default for
+   Nous subscribers" — and Browserbase). No `BROWSERBASE_*`/`BROWSER_USE_*` keys are in
+   `~/.hermes/.env` today, so nothing is leaking, but adding those keys would silently
+   route browsing (and any logged-in session) off-box. Relevant given 2026-08-28.
+
+**Changed:** New trust-tiered browser stack under `~/.config/epaq-browser/`, registered
+**only** under `HERMES_HOME=~/.hermes-epaq` so the main profile is untouched.
+- `chrome-devtools-mcp` **pinned 1.8.0**, installed locally (not `npx @latest`).
+- `launch.sh` — single policy point. Tier A (`public`) = `--isolated` ephemeral profile.
+  Tier B (`<portal>`) = dedicated `--userDataDir` + **mandatory** `--allowedUrlPattern`
+  from `portals/<portal>.allow`; **fails closed** if that file is missing/empty.
+  Forces off two upstream telemetry defaults: `--usageStatistics` (usage data to Google)
+  and `--performanceCrux` (**visited URLs** to the CrUX API). Adds
+  `--redactNetworkHeaders`, `--categoryPerformance=false`.
+- `login.sh` — one-time headful sign-in per portal; agent never sees a password.
+- `mcp_servers.browse-public.tools.include` hand-edited to **16 of 26** tools.
+  `upload_file` excluded (local-file exfil path under prompt injection);
+  `take_screenshot` excluded (DS4 has no vision — pure context burn).
+- `current.md` gains `### Browser automation` under the Epa Q section.
+
+**Expected:** Epa Q can research the public web autonomously (Tier A) with no credentials
+in play, and a Tier B portal can later be added where an injected prompt has no egress
+path — the allowlist is enforced by Chrome, not by model judgement. Deliberately
+structural, not a supervisor model: the 2026-08-28 lesson was that behavioural guardrails
+misfire.
+
+**Refs:** Brave security research on indirect prompt injection in agentic browsers
+(brave.com/blog/comet-prompt-injection, /unseeable-prompt-injections); Simon Willison's
+"lethal trifecta"; chrome-devtools-mcp 1.8.0 `--help`.
+
+**Smoke test:**
+- Standalone stdio probe: MCP handshake OK, `chrome_devtools` 1.8.0, 29 tools (26 with
+  `--categoryPerformance=false`). ✅
+- **Egress allowlist verified with a control pair** — with
+  `--allowedUrlPattern 'https://example.com/*'`: example.com navigates, wikipedia.org
+  returns `Navigation to ... is blocked by blocklist/allowlist rules`. Without the flag
+  (control), wikipedia.org loads normally. So the block is the allowlist, not an
+  unrelated failure. ✅
+- 🔴 **A block is NOT a tool error** — it comes back as a *successful* tool result whose
+  text contains `is blocked by blocklist/allowlist rules`. Parse on that string, never on
+  `isError`. ✅
+- Fail-closed: `launch.sh nonexistent-portal` -> exit 1, refuses to start. ✅
+- Both tiers through `launch.sh`: Tier A reaches both hosts; Tier B (`demo`, allowlist
+  example.com) reaches example.com and is blocked on wikipedia.org; profile dir created. ✅
+- `HERMES_HOME=~/.hermes-epaq hermes mcp list` -> `browse-public  16 selected  ✓ enabled`. ✅
+  (`hermes mcp test` lists all 26 — it reports what the *server* advertises, not the
+  client-side filter. Not a discrepancy.)
+- ✅ **END-TO-END PASSED.** `hermes chat -Q --provider custom:local-models -m
+  deepseek-v4-flash` under `HERMES_HOME=~/.hermes-epaq`, asked to open example.com via
+  `browse-public` and return only the main heading, replied `Example Domain`, exit 0
+  (session `20260901_122538_cb70d9`). Ran as a *second* concurrent DS4 session alongside
+  Epa Q task #34 and both completed — np=2 absorbed it, but note this violated the
+  "one heavy agentic session at a time" design intent and should not be repeated on a
+  busy queue.
+- ✅ **No process leak.** After the run: zero `chrome-devtools-mcp.js` survivors, zero
+  Chrome processes referencing `epaq-browser/profiles` or the MCP's own chrome-profile
+  dir. The 18 live `chrome` processes are Dinesh's daily-driver session (no
+  `--user-data-dir` flag). `~/.cache/chrome-devtools-mcp` is 8 KB.
+- ⚠️ **Upstream Hermes bug surfaced (benign here, watch it):**
+  `tools/mcp_tool.py:6189` emits `RuntimeWarning: coroutine
+  'MCPServerTask._watch_stdio_children' was never awaited`. The guard calls
+  `_watch_children()` *inside* `inspect.isawaitable(...)`, creating a coroutine it then
+  drops, so the stdio child-watcher never runs and the code falls back to the
+  pre-#81995 plain-await path. Cleanup still worked this run (verified above), but if
+  orphaned Chrome processes ever accumulate under cron-driven dispatch, this is the
+  cause — relevant given the host's GTT/RAM oversubscription.
+
+**Gotchas found:**
+- 🔴 The server executable is `build/src/bin/chrome-devtools-mcp.js`. Pointing a launcher
+  at `build/src/index.js` (the package `main`) **exits 0 with no output** — a silent
+  no-op that looks like a broken pipe on the client side.
+- 🔴 `hermes mcp add` requires a **TTY** for its `[Y/n/select]` tool picker. Piping `y`
+  saves **all** tools; there is no non-interactive select. The `select` path writes
+  `mcp_servers.<name>.tools.include`, so hand-edit that key afterwards.
+- `navigate_page` requires a **numeric** `pageId` (`--pageIdRouting` defaults true); get
+  it from `list_pages`, and pass an int, not a string.
+
+**Not done / open:**
+- `agent-browser` symlink NOT repaired and the native `browser` toolset NOT disabled —
+  awaiting Dinesh's call (repair the shim vs. drop the toolset in favour of the MCP).
+- No Tier B portal registered yet — needs a target portal from Dinesh.
+
+---
+
 ## 2026-08-31 (latest+1) — Compression split by route: `~/.hermes-epaq` profile for Epa Q, main config to auto
 
 **Observed:** Dinesh asked whether dropping DS4's `ctx-size` 262144 -> 131072 and raising

@@ -354,6 +354,44 @@ allowlist and `--allowedUrlPattern` is MCP-side CDP interception, not a Chrome f
 `browser.cdp_url` cannot provide it. `launch.sh` fails closed without an allowlist.
 **Tier C (banking, email, irreversible): no automation.**
 
+**Camofox — EVALUATED 2026-09-01, installed but NOT wired in.** Anti-detect Firefox
+(Camoufox 152.0.4 beta.29) behind a REST server; Hermes has a first-class backend for it
+(`tools/browser_camofox.py`). Installed on this box, **config deliberately unchanged**:
+`browser.cloud_provider` is still `local` in both profiles, so nothing routes to it until
+you flip that. Start it with `CAMOFOX_PORT=9377 npx -y @askjo/camofox-browser@^1.5.2`
+(binaries already cached — pre-warms in ~0.9 s; the 1.3 GB download is done).
+
+🔴 **The mechanism:** Chromium/agent-browser reports **`navigator.webdriver === true`** —
+the single most-checked automation tell — and leaks real host specs
+(`hardwareConcurrency: 32`, `deviceMemory: 32`). Camoufox reports
+**`WebDriver (New): missing (passed)` and `WebDriver Advanced: passed`** on
+`bot.sannysoft.com`. That difference is the whole result below.
+
+| target | chromium | camofox | winner |
+|---|---|---|---|
+| Kayak | redirected to `/help/bots.html` | reached results page (15,941 ch) | **camofox** |
+| Daft.ie | 459 ch (nothing) | 16,051 ch | **camofox (35x)** |
+| Indeed.ie | 856 ch, `Blocked` | 15,636 ch, clean | **camofox** |
+| Aer Lingus | 600 ch stub | 2,760 ch, reached `/app/make/…` | camofox (still no prices) |
+| **LinkedIn** | **15,739 ch** | 2,011 ch | **chromium** |
+| Amazon.ie | 15,655 ch | 15,353 ch | tie, both fine |
+| Skyscanner | PerimeterX CAPTCHA | PerimeterX CAPTCHA | **both lose** |
+| Google Flights | consent wall | consent wall | neither — that is EU cookie consent, not bot detection |
+
+**Verdict: 4 wins, 1 loss, 2 ties, 1 mutual loss — a real but NOT universal upgrade.**
+🔴 **LinkedIn is the counter-example that kills "just make camofox the default"** — keep
+both and pick per target. Camofox beats *fingerprint*-based defense; it does nothing for
+IP reputation, so commercial-grade WAFs (PerimeterX/DataDome) still win — that needs a
+residential proxy, which is the only remaining lever short of an API.
+
+⚠️ **Cost: 1.61 GiB resident** (camoufox-bin 563 MiB + WebExtensions/content procs + Xvfb)
+and **1.3 GB on disk** (not the ~300 MB the Hermes docstring claims). On a box with
+~3.5 GiB MemAvailable that is ~45% of headroom, so **do not make it always-resident** —
+socket-activate it like `firecrawl-proxy`/`hermes-dashboard-proxy` if it gets wired in.
+Teardown verified clean: MemAvailable 2.78 -> 4.31 GiB, no orphan Xvfb or camoufox procs.
+✅ It starts its own **Xvfb** virtual display, so unlike Browser Use CLI it genuinely runs
+headless with no GUI click.
+
 ---
 
 ### Background — how the browser stack resolves (2026-09-01)

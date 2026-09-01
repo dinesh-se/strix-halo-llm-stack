@@ -26,6 +26,74 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-09-01 (later+5) — Camofox evaluated: beats fingerprint defenses, loses to IP reputation; installed, NOT wired in
+
+**Observed:** After establishing that the browser tier cannot reach bot-defended sites
+(flight aggregators), the open question was whether Hermes' bundled-but-uninstalled
+**Camofox** backend closes the gap. It has a first-class integration
+(`tools/browser_camofox.py`) and was never installed here.
+
+🔴 **Root mechanism, measured on `bot.sannysoft.com`:** the current stack
+(agent-browser -> Chromium) reports **`navigator.webdriver === true`** — the most-checked
+automation signal there is — and leaks real host specs (`hardwareConcurrency: 32`,
+`deviceMemory: 32`). Camoufox reports `WebDriver (New): missing (passed)` and
+`WebDriver Advanced: passed`. Every result below follows from that one difference.
+
+| target | chromium | camofox | winner |
+|---|---|---|---|
+| Kayak | redirected to `/help/bots.html` | reached results page (15,941 ch) | camofox |
+| Daft.ie | 459 ch | 16,051 ch | camofox (35x) |
+| Indeed.ie | 856 ch, `Blocked` | 15,636 ch clean | camofox |
+| Aer Lingus | 600 ch stub | 2,760 ch, reached `/app/make/…` | camofox (no prices either way) |
+| LinkedIn | 15,739 ch | 2,011 ch | **chromium** |
+| Amazon.ie | 15,655 ch | 15,353 ch | tie |
+| Skyscanner | PerimeterX CAPTCHA | PerimeterX CAPTCHA | both lose |
+| Google Flights | consent wall | consent wall | neither (EU consent, not bot detection) |
+
+**4 wins, 1 loss, 2 ties, 1 mutual loss.** 🔴 **LinkedIn is the counter-example that rules
+out making camofox the default** — it must be a per-target choice, not a global swap.
+Camofox defeats *fingerprint* checks; it does nothing about IP reputation, so
+commercial WAFs (PerimeterX/DataDome) still win. That gap needs a residential proxy or an
+API — no config fixes it.
+
+**Changed:**
+- Installed **Camoufox 152.0.4 (beta.29)** -> `~/.cache/camoufox` (**1.3 GB**, not the
+  ~300 MB `tools/browser_camofox.py`'s docstring claims) via `npx -y camoufox-js fetch`.
+  Server package `@askjo/camofox-browser@^1.5.2` resolved through **npx only — no global
+  npm install**, per the agent-browser lesson (see 2026-09-01 entries).
+- Profile dir created at `~/.camofox/profiles`.
+- 🔴 **NO config change. `browser.cloud_provider` remains `local` in both profiles**, so
+  nothing routes to camofox. `CAMOFOX_URL` alone does NOT activate it once a selection is
+  stored (`is_camofox_mode()` — legacy env-only activation applies only when no selection
+  was ever written). Turning it on is a deliberate `cloud_provider: camofox` edit.
+- Ad-hoc test server **torn down**; only cached binaries persist.
+
+**Expected:** No behaviour change to the running system — this is a measured capability
+now available on demand, not a deployment.
+
+**Refs:** `tools/browser_camofox.py`; `scripts/install.sh:3176`
+(`@askjo/camofox-browser@^1.5.2`); github.com/jo-inc/camofox-browser (the Docker image
+`jo-inc/camofox-browser` in the docstring is **not publicly pullable** — returns
+`unauthorized`; npx is the working path).
+
+**Smoke test:**
+- Server up on `:9377`, camoufox pre-warmed in **919 ms**; ✅ starts its own **Xvfb**, so
+  unlike Browser Use CLI it is genuinely headless (no GUI "Allow remote debugging?" click).
+- 8 real targets A/B'd against the live Chromium path, table above.
+- **Cost measured: 1.61 GiB resident** (camoufox-bin 563 MiB + content procs + Xvfb 64 MiB).
+- Teardown verified: `:9377` down, **zero** orphan camoufox/Xvfb procs, MemAvailable
+  2.78 -> **4.31 GiB**.
+
+⚠️ **If it ever gets wired in, socket-activate it** (`firecrawl-proxy` /
+`hermes-dashboard-proxy` pattern). 1.61 GiB is ~45% of this box's MemAvailable headroom;
+always-resident is the wrong shape given the standing GTT oversubscription.
+
+⚠️ **`pkill -f` self-matches the invoking shell** when the pattern appears in its own
+command line — it killed my shell twice mid-run. Resolve the pid from `ss -ltnp` and
+`kill` that instead.
+
+---
+
 ## 2026-09-01 (later+4) — SearXNG: 4-month-stale image + a bing engine serving garbage; search relevance 36.7% -> 98.9%
 
 **Observed:** Asked whether the research stack could get live flight prices, I benchmarked

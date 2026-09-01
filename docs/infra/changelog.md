@@ -26,6 +26,94 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-09-01 (later+4) — SearXNG: 4-month-stale image + a bing engine serving garbage; search relevance 36.7% -> 98.9%
+
+**Observed:** Asked whether the research stack could get live flight prices, I benchmarked
+it and found web search itself was broken — not the flight sites. SearXNG returned
+**confident garbage**: `systemd socket activation tutorial` -> a Ducky keyboard manual,
+`reverse a linked list python` -> `brake.co.uk`, `SearXNG documentation` -> `balloons4u.co.uk`,
+`best flight search engine 2026` -> Chinese BitTorrent forums. Every one was **HTTP 200,
+full result count, `success: true`, and absent from `unresponsive_engines`** — so the
+morning's documented triage step (check `unresponsive_engines` when research "returns
+nothing") could not catch it, because nothing *returned nothing*. Non-deterministic across
+runs, so a single spot-check looks fine.
+
+🔴 **Two faults, the second masked by the first:**
+1. The image was `2026.5.8+d8ab61a9e`, **pulled 2026-05-08 — 4 months stale**. On it,
+   `google` was enabled but **returned 0 results silently** (no error, not in
+   `unresponsive_engines`). That silent-zero is *why* the morning session enabled bing.
+2. **bing's scraper is broken upstream.** Updating the image did NOT fix bing — it fixed
+   **google**. With google healthy again, bing contributed only noise.
+
+**Measured** with a new marker-regex relevance script (6 queries x 3 rounds x top-5),
+A/B'd on a throwaway container at `:8899` before prod was touched:
+
+| config | relevance |
+|---|---|
+| 2026.5.8, bing enabled (broken state) | 36.7% |
+| 2026.9.1, bing enabled | 65.6% |
+| **2026.9.1, bing disabled (shipped)** | **98.9%** |
+
+⚠️ **A config hypothesis I tested and rejected**, recorded so it is not re-tried: I
+suspected `outgoing.enable_http2: true` + `request_timeout: 3.0` were causing HTTP/2
+response/request mismatching (a timed-out request returning its connection to the
+keep-alive pool with the response still in flight, so the next request reads the previous
+response — which fits "coherent SERP for the wrong query" exactly). Measured
+`http2=false` + `timeout=8.0` on the old image: **36.7% vs 37.9% baseline — noise.**
+**Both settings were reverted to upstream defaults**; the mechanism was wrong.
+
+**Changed:**
+- `docker pull searxng/searxng:latest` -> `2026.9.1+79c8ffe0d` (digest
+  `sha256:ae889f0b…`). Container **recreated** (it is a plain `docker run`, not compose):
+  ```
+  docker run -d --name searxng --restart unless-stopped \
+    -p 127.0.0.1:8888:8080 \
+    -v /home/dinesh-se/.searxng:/etc/searxng:rw \
+    -v 712d444946d0…19c7:/var/cache/searxng \
+    -e SEARXNG_SECRET_KEY=<unchanged> \
+    --log-opt max-size=10m --log-opt max-file=3 \
+    searxng/searxng:latest
+  ```
+- `~/.searxng/settings.yml`: general `bing` engine -> `disabled: true` (reverses this
+  morning's change; bing images/news/videos untouched). Backups:
+  `settings.yml.bak-20260901-http2fix` (pre-experiment),
+  `settings.yml.bak-20260901-before-bing-disable`.
+- `outgoing.enable_http2` / `request_timeout`: **unchanged** (tested, reverted).
+- New: `docs/infra/scripts/searxng-relevance.py` — scores relevance, not result count.
+- Old container parked stopped as `searxng-old-2026058` for rollback (delete ~2026-09-15).
+
+**Expected:** Hermes `web_search` returns relevant results again. Nothing else moves —
+port `:8888`, `SEARXNG_URL` in both Hermes profiles, and `search.formats: [html, json]`
+are all unchanged, so no consumer needs editing.
+
+**Refs:** SearXNG image `searxng/searxng:latest` @ `2026.9.1+79c8ffe0d`; prior entry
+2026-09-01 (the "enable bing" fix this supersedes).
+
+**Smoke test:**
+- Running container (not the file): `docker exec searxng grep …` -> `2026.9.1+79c8ffe0d`,
+  bing `disabled: true`.
+- UI HTTP 200; `?format=json` -> `results=10 engines=google,wikipedia`;
+  `?format=csv` -> **403** (still deliberately disabled, per the 2026-07-19 trim).
+- Post-restart log sweep: only the pre-existing `brave`/`duckduckgo`/`startpage`/
+  `karmasearch`/`mojeek` CAPTCHA-403-429 tracebacks. No new fault class.
+- Relevance script on live prod: **98.9%**.
+- **End-to-end through the real consumer**, not curl:
+  `tools.web_tools.web_search_tool('systemd socket activation tutorial')` ->
+  `success: true` with ilmanzo.github.io, freedesktop.org, man7.org, 0pointer.de.
+
+🔴 **Lesson — `unresponsive_engines` is not a health check.** It catches CAPTCHA/403/429
+and is **empty** for both failure modes here: silent-zero (google) and confident-garbage
+(bing). Score relevance. And an engine returning confident garbage is **worse than one
+returning nothing**, because the "empty with success" trap documented this morning at
+least announces itself.
+
+🔴 **A host-side `sed -i` on `~/.searxng/settings.yml` fails "Permission denied" and the
+surrounding pipeline keeps going** — an unverified edit reads as applied when it is not.
+I lost a benchmark round to this. Always `grep` the value back out of the *running*
+container. The entrypoint re-`chown`s the config dir to uid 977 on every start.
+
+---
+
 ## 2026-09-01 (later+3) — Epa Q: periodic checkpoint RE-ADDED; accidental `hermes update` cost task #34 4h25m
 
 **Observed:** A shell-quoting error of mine ran `hermes update` unintentionally — I wrote

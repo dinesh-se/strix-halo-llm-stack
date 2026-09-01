@@ -288,13 +288,50 @@ Design + operations trail: `~/Dev/automated-workflows/epa_q/` (`REQUIREMENTS.md`
 
 ### Research + browser automation — THE WORKING SETUP (2026-09-01)
 
-**Search** = SearXNG (`:8888`) -> **bing**. 🔴 Every other general engine is CAPTCHA'd or
-suspended (`brave`, `duckduckgo`, `startpage`, `karmasearch`); bing was `disabled: true`,
-so search returned `{"success": true, "web": []}` — **empty, with success, silently.** Fixed
-by enabling bing (+ mojeek, currently 0 but harmless) in `~/.searxng/settings.yml`.
-🔴 That file is **root-owned** — edit via `docker run -u 0 -v ~/.searxng:/cfg alpine`, not
-sudo. Re-check the engine sweep whenever research "returns nothing":
+**Search** = SearXNG (`:8888`) -> **google**. Image **2026.9.1**, bing **disabled**.
+🔴 **REVISED 2026-09-01 (later).** The morning's "enable bing" fix was correct for a
+4-month-stale image but became the problem once measured: bing was returning **coherent
+SERPs for entirely unrelated queries** (`systemd socket activation tutorial` -> a Ducky
+keyboard manual; `reverse a linked list python` -> `brake.co.uk`; `SearXNG documentation`
+-> `balloons4u.co.uk`), with **HTTP 200, no error, no `unresponsive_engines` entry**.
+Non-deterministic, so it survives a single spot-check.
+
+**Measured relevance** (6 queries x 3 rounds x top-5, marker-regex scored; script kept at
+`docs/infra/scripts/searxng-relevance.py`):
+
+| config | relevance |
+|---|---|
+| 2026.5.8 image, bing enabled (the broken state) | **36.7%** |
+| 2026.9.1 image, bing enabled | 65.6% |
+| **2026.9.1 image, bing disabled (current)** | **98.9%** |
+
+Two independent faults, and the second was masked by the first:
+1. **The image was 4 months stale** (`2026.5.8+d8ab61a9e`, pulled 2026-05-08). On it
+   **`google` returned 0 results silently** — which is *why* the morning session reached for
+   bing. Updating to `2026.9.1+79c8ffe0d` revived google.
+2. **bing's scraper is broken upstream** and updating did NOT fix it. With google healthy,
+   bing is pure noise, so it is now `disabled: true` again. ⚠️ Do not re-enable it as a
+   "fallback" without re-running the relevance script — an engine that returns confident
+   garbage is worse than one that returns nothing.
+
+🔴 **`unresponsive_engines` is NOT sufficient.** It catches CAPTCHA/403/429 but is empty
+for both failure modes seen here: silent-zero (google on the old image) and
+confident-garbage (bing). **Score relevance, don't just count results.** Still worth the
+sweep as a first check:
 `curl -s "localhost:8888/search?q=X&format=json" | jq .unresponsive_engines`.
+
+🔴 `~/.searxng/settings.yml` is **root-owned** — edit via
+`docker run -u 0 -v ~/.searxng:/cfg alpine`, not sudo. A host-side `sed -i` **fails with
+"Permission denied" and the pipeline keeps going**, so an unverified edit reads as applied
+when it is not — always `grep` the value back out of the *running* container afterwards.
+⚠️ SearXNG's entrypoint re-`chown`s the whole config dir to uid 977 on every start.
+
+Still CAPTCHA'd/rate-limited and contributing nothing: `brave` (429), `duckduckgo`,
+`startpage`, `karmasearch`, `mojeek` (403). google + wikipedia carry the results.
+
+⚠️ **Not compose-managed** — SearXNG is a plain `docker run`. The recreate command is in
+the changelog entry for 2026-09-01; the previous container is parked stopped as
+`searxng-old-2026058` for rollback (delete from ~2026-09-15).
 
 **Extract** = self-hosted Firecrawl (`FIRECRAWL_API_URL=http://localhost:3002`). Works.
 ⚠️ `web_extract_tool` takes a **list** of URLs — pass a bare string and it iterates

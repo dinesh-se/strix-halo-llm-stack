@@ -31,6 +31,7 @@ captured at the time and is marked accordingly.
 **Changed:** No runtime change — plan only: `docs/infra/planner-executor-flip-plan-2026-09-02.md`. Revisit reminder enqueued for 2026-09-09.
 **Expected:** Decision framework + token math for a possible residency flip. Headline: ~2–5x FEWER total tokens (bounded contexts vs 65–120k re-prefill per turn), wall-clock ~2–3x faster, but $0 → ~$0.2–0.5/task planner-leg cost (or $0 via free tier). Flip is binary — 35B Q4_K_M (~21–23 GiB) cannot coexist with DS4 (103.3 GiB of 120 used).
 **Refs:** AGENTS.md model lineup; models.ini (DS4 measured stats, 27b eval 2026-08-20); session 2026-09-02.
+**Correction (same day):** `deepseek-v4-flash-free` retired on OpenCode Zen — planner leg all-paid; the config fallback entry `deepseek-v4-flash-free` is now dead (skips to paid DS4).
 **Smoke test:** Doc written and committed; reminder enqueued via TaskOutbox.
 
 ---

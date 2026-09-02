@@ -39,15 +39,29 @@ For a 50–100-turn task (the observed 2–4h tasks):
 **Flipped (cloud DS4 planner + local 35B executor):** contexts stay **bounded**.
 - Planner: ~25–40 decision/review turns × 15–40k context (stateless per subtask —
   only condensed diffs/test tails come back) ≈ **0.4–1.6M input** + ~60–80k output.
-  Paid on Zen: ≈ **$0.13–0.45/task** at $0.22/M in / $0.66/M out (off-peak) — or **$0**
-  on `deepseek-v4-flash-free` if the free tier holds for the planner leg.
+  Paid on Zen: ≈ **$0.13–0.45/task** at $0.22/M in / $0.66/M out (off-peak).
+  ⚠️ **Note (2026-09-02):** `deepseek-v4-flash-free` is RETIRED on Zen — the planner
+  leg is all-paid; there is no free DS4 tier anymore.
 - Executor: ~25–40 fresh contexts × 10–30k ≈ **0.25–1.2M input** + ~50k output.
   Local = **$0** at 50–60 t/s.
 
 **Verdict: ~2–5x FEWER total tokens** (the monolith's re-prefill is the waste), with a
-**new small cost** on the planner leg only. Money spend: $0 → ~$0.2–0.5/task (or ~$0
-via free tier). **Wall-clock: ~2–3x faster (est. 45–90 min vs 2–4h)** — executor turns
+**new small cost** on the planner leg only. Money spend: $0 → ~$0.2–0.5/task (no free
+DS4 tier — retired 2026-09-02). **Wall-clock: ~2–3x faster (est. 45–90 min vs 2–4h)** — executor turns
 are ~1.5–2 min (small prefill + 55 t/s decode + cloud round-trip) vs ~6–11 min today.
+
+**Prefill — the Gemma question (2026-09-02):** no draft/small model can speed up a big
+model's prefill — prefill is compute-bound batch work over the whole prompt. Speculative
+decoding (Gemma-as-draft) accelerates DECODE only, and DS4's own MTP head was already
+rejected (0.583 accept vs 0.70 floor, −10 GiB, two OOMs). The real prefill levers:
+(1) **slot-KV reuse** — same conversation on a warm slot prefills only the delta; today's
+65–120k per-turn re-prefill is worsened by slot contention (3 conversation slots, many
+consumers) — a dedicated executor slot would help; (2) **llama.cpp prompt cache**
+(`cache-ram`) — prefix-KV reuse across calls, but DISABLED (`cache-ram=0`) because it
+caused the 2026-07-19 host-RAM OOM (not capacity-enforced on Linux, llama.cpp#22629);
+revisitable only with guardrails or a disk-backed cache; (3) **shrink the prompt** —
+gemma4-e4b (114 t/s) as history compressor (already the Hermes-compression model),
+which is this flip's bounded-context design in miniature.
 
 **⚠️ The lever that makes or breaks this:** orchestration must stay **stateless-bounded**.
 Executor returns condensed results (diff + test tail), never full file dumps; planner
@@ -93,7 +107,7 @@ relocates to paid Zen — the worst of both worlds.
 - **Single-caller only.** qwen3.8-27b eval (2026-08-20) lesson: fast per token but
   lost on multi-caller work. The 35B must stay a worker — never promoted to general chat.
 - **Network dependency:** every step needs a cloud planner round-trip; outage → executor idle.
-- **Cost drift:** paid planner leg; watch monthly Zen spend; free tier if stable.
+- **Cost drift:** paid planner leg (no free DS4 tier since 2026-09-02); watch monthly Zen spend.
 - **DS4 cold load 3–11 min** after eviction — affects any local-strong fallback need.
 
 ## 7. Open data to collect before revisit

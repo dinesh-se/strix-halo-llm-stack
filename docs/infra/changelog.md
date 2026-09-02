@@ -26,6 +26,15 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-09-02 — DS4 parallel 4 -> 3 (local caller set shrank)
+**Observed:** pi dormant since 2026-07-31 (no crons/sessions/processes); Hermes main chat, delegation children and Hindsight reflect moved to opencode-zen cloud on 2026-08-26/27. The local DS4 caller set is now only: Epa Q executor (dominant, one at a time) + lease-serialized briefings + short local crons — the -np 4 caller math went stale.
+**Changed:** `parallel = 4` -> `3` in BOTH models.ini copies (runtime `~/llama-stack/config/` + repo); backup `models.ini.bak-20260902-pre-np3`; comment block records the 4->3 rationale + rollback; AGENTS.md + `docs/infra/current.md` updated.
+**Expected:** Recovers the MEASURED +1.08 GiB GTT (4th slot = compute buffers only under kv-unified; KV pool unchanged). Two conversation slots (watchdog probe pins slot 2) fit the current caller set. Deliberately NOT -np 2: one conversation slot = zero margin — any second local caller evicts the executor session and the 23-47% cold re-prefill / 816 s tax returns.
+**Refs:** docs/infra/current.md slot-starvation section; models.ini history 2->3 (2026-08-07), 3->4 (2026-08-25).
+**Smoke test:** Pending — `docker restart llama-router` (Dinesh); then verify `--parallel 3` in the DS4 process args + /metrics slot counts + one Epa Q task tick.
+
+---
+
 ## 2026-09-02 — Planner/Executor flip plan documented (cloud DS4 brain + local Qwen3.6-35B-A3B resident executor)
 **Observed:** Epa Q tasks take 2–4h each on the local DS4 monolith executor (one morning task ~4h). Free-cloud delegation chain went live 2026-09-02 (commit `c38cbc5`, `delegate_ok` opt-in + free chain). Dinesh asked whether a flipped architecture (cloud DS4 planner via Zen + Qwen3.6-35B-A3B resident executor) would spend more or fewer tokens.
 **Changed:** No runtime change — plan only: `docs/infra/planner-executor-flip-plan-2026-09-02.md`. Revisit reminder enqueued for 2026-09-09.

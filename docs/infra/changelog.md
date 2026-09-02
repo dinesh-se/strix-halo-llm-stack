@@ -26,6 +26,15 @@ captured at the time and is marked accordingly.
 
 ---
 
+## 2026-09-02 — Planner/Executor flip plan documented (cloud DS4 brain + local Qwen3.6-35B-A3B resident executor)
+**Observed:** Epa Q tasks take 2–4h each on the local DS4 monolith executor (one morning task ~4h). Free-cloud delegation chain went live 2026-09-02 (commit `c38cbc5`, `delegate_ok` opt-in + free chain). Dinesh asked whether a flipped architecture (cloud DS4 planner via Zen + Qwen3.6-35B-A3B resident executor) would spend more or fewer tokens.
+**Changed:** No runtime change — plan only: `docs/infra/planner-executor-flip-plan-2026-09-02.md`. Revisit reminder enqueued for 2026-09-09.
+**Expected:** Decision framework + token math for a possible residency flip. Headline: ~2–5x FEWER total tokens (bounded contexts vs 65–120k re-prefill per turn), wall-clock ~2–3x faster, but $0 → ~$0.2–0.5/task planner-leg cost (or $0 via free tier). Flip is binary — 35B Q4_K_M (~21–23 GiB) cannot coexist with DS4 (103.3 GiB of 120 used).
+**Refs:** AGENTS.md model lineup; models.ini (DS4 measured stats, 27b eval 2026-08-20); session 2026-09-02.
+**Smoke test:** Doc written and committed; reminder enqueued via TaskOutbox.
+
+---
+
 ## 2026-09-01 (later+6) — Firecrawl 2026-05-08 -> v2.11.272 (812 commits); FoundationDB parked, two local deltas retired
 
 **Observed:** Firecrawl's checkout was pinned at upstream `3afe6df1f` (2026-05-08) with
